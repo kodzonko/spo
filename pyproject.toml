@@ -21,8 +21,10 @@ spo = "src.spo.main:main"
 
 [tool.mypy]
 python_version = "3.13"
-mypy_path = "src"
+mypy_path = ["src"]
 packages = ["spo"]
+warn_unused_ignores = true
+strict_optional = true
 
 [tool.ruff]
 src = ["src"]
@@ -43,7 +45,6 @@ python_functions = ["test_*"]
 addopts = ["--strict-markers", "--strict-config", "--verbose"]
 filterwarnings = ["error", "ignore::UserWarning", "ignore::DeprecationWarning"]
 markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests"
 ]

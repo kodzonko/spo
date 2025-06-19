@@ -11,3 +11,9 @@ When adding new features or fixing bugs, ensure to write tests that cover the ne
 Don't create docstrings for tests, but ensure they are clear and descriptive.
 
 When making changes to the codebase, ensure that you run the tests locally to verify the changes.
+
+To annotate optional values don't use `Optional`, instead use `Type | None` for type hints.
+
+When annotaing collections, use the `list`, `dict`, `set`, and `tuple` types directly instead of using `List`, `Dict`, `Set`, and `Tuple` from the `typing` module.
+
+When annotating collections with specific types, use `list[Type]`, `dict[KeyType, ValueType]`, `set[Type]`, and `tuple[Type1, Type2, ...]` instead of `List[Type]`, `Dict[KeyType, ValueType]`, `Set[Type]`, and `Tuple[Type1, Type2, ...]`.
