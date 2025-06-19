@@ -1,11 +1,3 @@
-# Spotify to YouTube Music Sync
+# SPO - Spotify to YouTube Music Sync
 
-A Python tool for bi-directional playlist synchronization between Spotify and YouTube Music.
-
-## Core Features
-
-- 🔄 One-way playlist sync
-- 📊 Smart pagination handling
-- 🛡️ Rate limit protection
-- 💾 Persistent storage
-- 🔑 OAuth authentication
+A comprehensive Python tool for synchronizing playlists between Spotify and YouTube Music
