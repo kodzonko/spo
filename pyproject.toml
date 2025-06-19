@@ -1,0 +1,10 @@
+[project]
+name = "spo"
+version = "0.1.0"
+description = "A Python application that synchronizes Spotify playlists with YouTube Music"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = ["python-dotenv>=1.0.1", "spotipy>=2.25.0"]
+
+[dependency-groups]
+dev = ["isort>=6.0.1", "mypy>=1.15.0", "ruff>=0.9.6"]
