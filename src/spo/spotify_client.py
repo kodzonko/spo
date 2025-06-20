@@ -1,9 +1,10 @@
 import os
 import socket
 
-import spotipy  # type: ignore
+import spotipy
 from dotenv import load_dotenv
-from spotipy.oauth2 import SpotifyOAuth  # type: ignore
+from loguru import logger
+from spotipy.oauth2 import SpotifyOAuth
 
 from spo.auth_server import AuthServer
 from spo.throttling import spotify_throttle
@@ -59,7 +60,9 @@ class SpotifyClient:
             for port in registered_ports:
                 if self._is_port_available(port):
                     try:
-                        print(f"🚀 Attempting automatic capture on port {port}...")
+                        logger.info(
+                            f"🚀 Attempting automatic capture on port {port}..."
+                        )
                         self._authenticate_automatic(client_id, client_secret, port)
                         return
                     except Exception as e:
@@ -67,28 +70,30 @@ class SpotifyClient:
                         if "invalid" in error_msg and (
                             "redirect" in error_msg or "client" in error_msg
                         ):
-                            print(f"❌ Port {port} not registered as redirect URI")
+                            logger.warning(
+                                f"❌ Port {port} not registered as redirect URI"
+                            )
                             continue
                         else:
                             # Some other error, re-raise
                             raise
 
             # All automatic attempts failed, fall back to manual
-            print(
+            logger.warning(
                 "\n📋 Automatic redirect capture failed - falling back to manual method"
             )
-            print("\n💡 To enable automatic capture in the future:")
-            print("   1. Go to: https://developer.spotify.com/dashboard")
-            print("   2. Click your app → Edit Settings → Redirect URIs")
-            print("   3. Add: http://localhost:8080/callback")
-            print("   4. Save and try again")
-            print()
+            logger.info("\n💡 To enable automatic capture in the future:")
+            logger.info("   1. Go to: https://developer.spotify.com/dashboard")
+            logger.info("   2. Click your app → Edit Settings → Redirect URIs")
+            logger.info("   3. Add: http://localhost:8080/callback")
+            logger.info("   4. Save and try again")
+            logger.info("")
         else:
-            print(
+            logger.info(
                 "🔧 Using manual authentication (no localhost redirect URI configured)"
             )
-            print(f"📋 Using redirect URI: {redirect_uri}")
-            print()
+            logger.info(f"📋 Using redirect URI: {redirect_uri}")
+            logger.info("")
 
         self._authenticate_manual(client_id, client_secret)
 
@@ -101,7 +106,7 @@ class SpotifyClient:
         callback_url = auth_server.start()
 
         try:
-            print(f"🔗 Using redirect URI: {callback_url}")
+            logger.info(f"🔗 Using redirect URI: {callback_url}")
             # Create OAuth manager with dynamic redirect URI
             auth_manager = SpotifyOAuth(
                 client_id=client_id,
@@ -118,23 +123,23 @@ class SpotifyClient:
             if not token_info:
                 # Get authorization URL and open in browser
                 auth_url = auth_manager.get_authorize_url()
-                print("🌐 Opening browser for authorization...")
-                print(f"📋 Authorization URL: {auth_url}")
-                print()
-                print("📝 IMPORTANT: After clicking 'Agree' in Spotify:")
-                print("   1. You should see a success page with green checkmark")
-                print("   2. The browser tab should close automatically")
-                print(
+                logger.info("🌐 Opening browser for authorization...")
+                logger.info(f"📋 Authorization URL: {auth_url}")
+                logger.info("")
+                logger.info("📝 IMPORTANT: After clicking 'Agree' in Spotify:")
+                logger.info("   1. You should see a success page with green checkmark")
+                logger.info("   2. The browser tab should close automatically")
+                logger.info(
                     "   3. If you see an error, check your redirect URI configuration"
                 )
-                print()
+                logger.info("")
 
                 import webbrowser
 
                 webbrowser.open(auth_url)
 
-                print("⏳ Waiting for authorization callback...")
-                print(
+                logger.info("⏳ Waiting for authorization callback...")
+                logger.info(
                     "💡 If this hangs, try refreshing the browser or check for popup blockers"
                 )
 
@@ -147,7 +152,7 @@ class SpotifyClient:
                 if not auth_code:
                     raise Exception("No authorization code received")
 
-                print("✅ Authorization code received!")
+                logger.success("✅ Authorization code received!")
 
                 # Exchange code for token
                 token_info = auth_manager.get_access_token(auth_code)
@@ -159,8 +164,10 @@ class SpotifyClient:
             if self._user is None:
                 raise Exception("Failed to get user information")
 
-            print("✅ Successfully authenticated using automatic redirect capture!")
-            print(
+            logger.success(
+                "✅ Successfully authenticated using automatic redirect capture!"
+            )
+            logger.info(
                 f"👤 Logged in as: {self._user['display_name']} (@{self._user['id']})"
             )
 
@@ -170,7 +177,7 @@ class SpotifyClient:
     def _authenticate_manual(self, client_id: str, client_secret: str) -> None:
         """Authenticate using manual copy-paste method."""
         redirect_uri = os.getenv("SPOTIFY_REDIRECT_URI", "https://spotify.com/")
-        print(f"🔗 Using redirect URI: {redirect_uri}")
+        logger.info(f"🔗 Using redirect URI: {redirect_uri}")
 
         # Create OAuth manager with static redirect URI
         auth_manager = SpotifyOAuth(
@@ -188,9 +195,9 @@ class SpotifyClient:
         if not token_info:
             # Get authorization URL
             auth_url = auth_manager.get_authorize_url()
-            print("🌐 Please visit this URL to authorize the application:")
-            print(f"📋 {auth_url}")
-            print()
+            logger.info("🌐 Please visit this URL to authorize the application:")
+            logger.info(f"📋 {auth_url}")
+            logger.info("")
 
             # Open in browser
             import webbrowser
@@ -198,8 +205,8 @@ class SpotifyClient:
             webbrowser.open(auth_url)
 
             # Get redirect URL from user
-            print("After authorizing, you'll be redirected to a URL.")
-            print("Please copy and paste the full redirect URL here:")
+            logger.info("After authorizing, you'll be redirected to a URL.")
+            logger.info("Please copy and paste the full redirect URL here:")
             redirect_response = input("📝 Redirect URL: ").strip()
 
             # Extract authorization code
@@ -211,7 +218,7 @@ class SpotifyClient:
                 params = parse_qs(parsed_url.query)
                 if "code" in params:
                     auth_code = params["code"][0]
-                    print("✅ Authorization code extracted!")
+                    logger.success("✅ Authorization code extracted!")
 
                     # Exchange code for token
                     token_info = auth_manager.get_access_token(auth_code)
@@ -227,8 +234,10 @@ class SpotifyClient:
         if self._user is None:
             raise Exception("Failed to get user information")
 
-        print("✅ Successfully authenticated using manual method!")
-        print(f"👤 Logged in as: {self._user['display_name']} (@{self._user['id']})")
+        logger.success("✅ Successfully authenticated using manual method!")
+        logger.info(
+            f"👤 Logged in as: {self._user['display_name']} (@{self._user['id']})"
+        )
 
     def _is_port_available(self, port: int) -> bool:
         """Check if a port is available for use."""
@@ -274,7 +283,7 @@ class SpotifyClient:
         try:
             track = self._spotify.track(track_id)
             if track is None:
-                print("❌ Track not found")
+                logger.error("❌ Track not found")
                 return {}
 
             return {
@@ -285,7 +294,7 @@ class SpotifyClient:
                 "preview_url": track["preview_url"],
             }
         except Exception as e:
-            print(f"❌ Failed to get track info: {e}")
+            logger.error(f"❌ Failed to get track info: {e}")
             return {}
 
     @spotify_throttle()
@@ -306,7 +315,7 @@ class SpotifyClient:
         try:
             results = self._spotify.search(q=query, type="track", limit=limit)
             if results is None or "tracks" not in results:
-                print("❌ No search results found")
+                logger.error("❌ No search results found")
                 return []
 
             tracks = []
@@ -324,7 +333,7 @@ class SpotifyClient:
 
             return tracks
         except Exception as e:
-            print(f"❌ Failed to search tracks: {e}")
+            logger.error(f"❌ Failed to search tracks: {e}")
             return []
 
     @spotify_throttle()
@@ -344,7 +353,7 @@ class SpotifyClient:
         try:
             results = self._spotify.current_user_playlists(limit=limit)
             if results is None or "items" not in results:
-                print("❌ No playlists found")
+                logger.error("❌ No playlists found")
                 return []
 
             playlists = []
@@ -363,7 +372,7 @@ class SpotifyClient:
 
             return playlists
         except Exception as e:
-            print(f"❌ Failed to get playlists: {e}")
+            logger.error(f"❌ Failed to get playlists: {e}")
             return []
 
     @spotify_throttle()
@@ -383,7 +392,7 @@ class SpotifyClient:
         try:
             results = self._spotify.current_user_saved_tracks(limit=limit)
             if results is None or "items" not in results:
-                print("❌ No saved tracks found")
+                logger.error("❌ No saved tracks found")
                 return []
 
             tracks = []
@@ -402,14 +411,5 @@ class SpotifyClient:
 
             return tracks
         except Exception as e:
-            print(f"❌ Failed to get saved tracks: {e}")
+            logger.error(f"❌ Failed to get saved tracks: {e}")
             return []
-
-    def __enter__(self):
-        """Context manager entry."""
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit - cleanup if needed."""
-        # Could add cleanup logic here if needed
-        pass

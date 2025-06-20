@@ -1,10 +1,3 @@
-"""
-Tests for the Spotify client functionality.
-
-These tests verify the SpotifyClient class behavior including authentication,
-API calls, and error handling.
-"""
-
 import os
 from unittest.mock import Mock, patch
 

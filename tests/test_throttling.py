@@ -1,10 +1,3 @@
-"""
-Tests for the throttling mechanism.
-
-These tests verify that the throttling decorator correctly limits API requests
-and handles rate limiting scenarios gracefully.
-"""
-
 import time
 from unittest.mock import Mock, patch
 

@@ -7,6 +7,8 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Optional
 
+from loguru import logger
+
 
 class CallbackHTTPServer(HTTPServer):
     """Custom HTTP server with OAuth callback attributes."""
@@ -23,7 +25,7 @@ class AuthCallbackHandler(BaseHTTPRequestHandler):
 
     server: CallbackHTTPServer  # Type hint for our custom server
 
-    def do_GET(self):
+    def do_GET(self):  # noqa: N802
         """Handle GET request to capture OAuth callback."""
         if "/callback" in self.path:
             # Parse the query parameters from the URL
@@ -137,7 +139,7 @@ class AuthServer:
         self.server_thread: Optional[threading.Thread] = None
 
     def start(self) -> str:
-        print(f"Starting server on port {self.port}")
+        logger.info(f"Starting server on port {self.port}")
         """
         Start the local server and return the callback URL.
 
@@ -152,7 +154,7 @@ class AuthServer:
         self.server_thread.start()
 
         callback_url = f"http://localhost:{self.port}/callback"
-        print(f"🚀 Local auth server started at {callback_url}")
+        logger.success(f"🚀 Local auth server started at {callback_url}")
         return callback_url
 
     def wait_for_callback(
@@ -188,4 +190,4 @@ class AuthServer:
             self.server.server_close()
         if self.server_thread:
             self.server_thread.join()
-        print("🛑 Local auth server stopped")
+        logger.info("🛑 Local auth server stopped")

@@ -10,7 +10,7 @@ from collections import defaultdict, deque
 from functools import wraps
 from typing import Any, Callable, Dict, Optional, TypeVar, Union
 
-import spotipy  # type: ignore
+import spotipy
 
 # Type variable for decorated functions
 F = TypeVar("F", bound=Callable[..., Any])
