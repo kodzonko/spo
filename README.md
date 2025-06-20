@@ -1,4 +1,14 @@
-[![Coverage Status](https://coveralls.io/repos/github/kodzonko/spo/badge.svg?branch=master)](https://coveralls.io/github/kodzonko/spo?branch=master)
+<p align="center">
+  <a href="https://coveralls.io/github/kodzonko/spo?branch=master">
+    <img src="https://coveralls.io/repos/github/kodzonko/spo/badge.svg?branch=master" alt="Coverage Status"/>
+  </a>
+  <a href="https://www.python.org/downloads/release/python-3130/">
+    <img src="https://img.shields.io/badge/python-3.13-blue.svg" alt="Python 3.13"/>
+  </a>
+  <a href="https://docs.astral.sh/ruff/">
+    <img src="https://img.shields.io/badge/code%20style-ruff-005A9C.svg?logo=ruff" alt="Ruff"/>
+  </a>
+</p>
 
 # SPO - Spotify to YouTube Music Sync
 
