@@ -23,7 +23,7 @@ class AuthCallbackHandler(BaseHTTPRequestHandler):
 
     server: CallbackHTTPServer  # Type hint for our custom server
 
-    def do_GET(self):
+    def do_get(self):
         """Handle GET request to capture OAuth callback."""
         # Parse the query parameters from the URL
         parsed_url = urllib.parse.urlparse(self.path)

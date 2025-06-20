@@ -9,9 +9,8 @@ import os
 from unittest.mock import Mock, patch
 
 import pytest
-import spotipy
 
-from src.spo.spotify_client import SpotifyClient
+from spo.spotify_client import SpotifyClient
 
 
 @pytest.fixture
@@ -71,7 +70,7 @@ def authenticated_client(patch_env, mock_oauth, mock_spotify):
 
 
 @patch.dict(os.environ, {}, clear=True)
-@patch("src.spo.spotify_client.load_dotenv")
+@patch("spo.spotify_client.load_dotenv")
 def test_missing_credentials_raises_error(mock_load_dotenv):
     with pytest.raises(ValueError, match="Missing Spotify credentials"):
         SpotifyClient()
@@ -96,10 +95,12 @@ def test_manual_authentication_success(patch_env, mock_oauth, mock_spotify):
 
 
 @patch("webbrowser.open")
+@patch("spo.spotify_client.SpotifyOAuth")
+@patch("spo.spotify_client.spotipy.Spotify")
 def test_automatic_authentication_success(
-    mock_browser, patch_env_with_redirect, mock_oauth, mock_spotify
+    mock_spotify, mock_oauth, mock_browser, patch_env_with_redirect
 ):
-    with patch("src.spo.spotify_client.AuthServer") as mock_auth_server:
+    with patch("spo.spotify_client.AuthServer") as mock_auth_server:
         mock_server = Mock()
         mock_server.start.return_value = "http://localhost:8080/callback"
         mock_server.wait_for_callback.return_value = ("auth_code", None)
@@ -251,7 +252,9 @@ def test_get_user_saved_tracks_success(authenticated_client):
     assert results[0]["added_at"] == "2023-01-01T00:00:00Z"
 
 
-def test_unauthenticated_client_raises_error():
+@patch("src.spo.spotify_client.SpotifyOAuth")
+@patch("src.spo.spotify_client.spotipy.Spotify")
+def test_unauthenticated_client_raises_error(mock_spotify, mock_oauth):
     client = SpotifyClient.__new__(SpotifyClient)
     client._spotify = None
     client._user = None
@@ -285,7 +288,9 @@ def test_context_manager(patch_env, mock_oauth, mock_spotify):
 
 
 @pytest.mark.integration
-def test_property_access_patterns():
+@patch("src.spo.spotify_client.SpotifyOAuth")
+@patch("src.spo.spotify_client.spotipy.Spotify")
+def test_property_access_patterns(mock_spotify, mock_oauth):
     client = SpotifyClient.__new__(SpotifyClient)
     client._spotify = Mock()
     client._user = {"id": "test", "display_name": "Test User"}

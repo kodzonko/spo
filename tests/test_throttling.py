@@ -10,7 +10,6 @@ from unittest.mock import Mock, patch
 
 import pytest
 import spotipy
-
 from src.spo.throttling import ThrottleManager, spotify_throttle, throttle
 
 # --- Fixtures ---

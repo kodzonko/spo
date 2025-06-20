@@ -1,13 +1,12 @@
 import os
 import socket
-from typing import Optional
 
 import spotipy  # type: ignore
 from dotenv import load_dotenv
 from spotipy.oauth2 import SpotifyOAuth  # type: ignore
 
-from .auth_server import AuthServer
-from .throttling import spotify_throttle
+from spo.auth_server import AuthServer
+from spo.throttling import spotify_throttle
 
 
 class SpotifyClient:
@@ -119,7 +118,7 @@ class SpotifyClient:
             if not token_info:
                 # Get authorization URL and open in browser
                 auth_url = auth_manager.get_authorize_url()
-                print(f"🌐 Opening browser for authorization...")
+                print("🌐 Opening browser for authorization...")
                 print(f"📋 Authorization URL: {auth_url}")
                 print()
                 print("📝 IMPORTANT: After clicking 'Agree' in Spotify:")
@@ -160,7 +159,7 @@ class SpotifyClient:
             if self._user is None:
                 raise Exception("Failed to get user information")
 
-            print(f"✅ Successfully authenticated using automatic redirect capture!")
+            print("✅ Successfully authenticated using automatic redirect capture!")
             print(
                 f"👤 Logged in as: {self._user['display_name']} (@{self._user['id']})"
             )
@@ -189,7 +188,7 @@ class SpotifyClient:
         if not token_info:
             # Get authorization URL
             auth_url = auth_manager.get_authorize_url()
-            print(f"🌐 Please visit this URL to authorize the application:")
+            print("🌐 Please visit this URL to authorize the application:")
             print(f"📋 {auth_url}")
             print()
 
@@ -228,7 +227,7 @@ class SpotifyClient:
         if self._user is None:
             raise Exception("Failed to get user information")
 
-        print(f"✅ Successfully authenticated using manual method!")
+        print("✅ Successfully authenticated using manual method!")
         print(f"👤 Logged in as: {self._user['display_name']} (@{self._user['id']})")
 
     def _is_port_available(self, port: int) -> bool:
