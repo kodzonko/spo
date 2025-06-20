@@ -271,11 +271,6 @@ def throttle(
                     # Consume token and make request
                     manager.consume_token(client_id)
 
-                    logger.debug(
-                        f"Making API request: {func.__name__} "
-                        f"(attempt {attempt + 1}/{manager.max_retries + 1})"
-                    )
-
                     result = func(*args, **kwargs)
 
                     return result
@@ -286,10 +281,6 @@ def throttle(
                     # Handle different types of Spotify exceptions
                     if e.http_status == 429:  # Too Many Requests
                         if attempt >= manager.max_retries:
-                            logger.error(
-                                f"API request {func.__name__} failed after "
-                                f"{manager.max_retries + 1} attempts: Rate limit exceeded"
-                            )
                             break
 
                         # Extract retry-after header if available
@@ -304,10 +295,6 @@ def throttle(
 
                     elif e.http_status in [500, 502, 503, 504]:  # Server errors
                         if attempt >= manager.max_retries:
-                            logger.error(
-                                f"API request {func.__name__} failed after "
-                                f"{manager.max_retries + 1} attempts: Server error {e.http_status}"
-                            )
                             break
 
                         delay = manager.calculate_retry_delay(attempt)
