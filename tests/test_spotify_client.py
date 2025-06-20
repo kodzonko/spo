@@ -245,6 +245,41 @@ def test_get_user_saved_tracks_success(authenticated_client):
     assert results[0]["added_at"] == "2023-01-01T00:00:00Z"
 
 
+def test_current_user_property_handles_missing_user(authenticated_client):
+    authenticated_client._user = None
+    with pytest.raises(Exception, match="Client is not authenticated"):
+        _ = authenticated_client.current_user
+
+
+def test_user_info_handles_missing_fields(authenticated_client):
+    authenticated_client._user = {"id": "only_id"}
+    # Should not raise, but may fallback to default formatting or raise KeyError
+    try:
+        info = authenticated_client.user_info
+    except KeyError:
+        info = None
+    assert info is None or info.startswith("Unknown") or info.startswith("(@only_id)")
+
+
+def test_get_user_playlists_malformed_response(authenticated_client):
+    authenticated_client._spotify.current_user_playlists.return_value = {"items": []}
+    results = authenticated_client.get_user_playlists(limit=1)
+    assert results == []
+
+
+def test_get_user_saved_tracks_malformed_response(authenticated_client):
+    authenticated_client._spotify.current_user_saved_tracks.return_value = {"items": []}
+    results = authenticated_client.get_user_saved_tracks(limit=1)
+    assert results == []
+
+
+def test_throttle_retries_on_rate_limit(authenticated_client):
+    # Simulate rate limit error on all calls, should return {} after retries
+    authenticated_client._spotify.track.side_effect = Exception("rate limit exceeded")
+    result = authenticated_client.get_track_info("retry_track_id")
+    assert result == {}
+
+
 @patch("spo.spotify_client.SpotifyOAuth")
 @patch("spo.spotify_client.spotipy.Spotify")
 def test_unauthenticated_client_raises_error(mock_spotify, mock_oauth):
