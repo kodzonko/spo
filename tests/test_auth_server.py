@@ -54,6 +54,21 @@ def test_callback_with_no_params(auth_server):
     assert error is None
 
 
+def test_non_callback_path_returns_501(auth_server):
+    server, url = auth_server
+    # Use a different path to trigger the 501 branch
+    resp = requests.get("http://localhost:8081/not_callback")
+    assert resp.status_code == 501
+
+
+def test_wait_for_callback_server_not_started():
+    server = AuthServer(port=8090)
+    # Do not start the server
+    code, error = server.wait_for_callback(timeout=1)
+    assert code is None
+    assert error == "Server not started"
+
+
 def test_wait_for_callback_timeout():
     server = AuthServer(port=8082)
     server.start()

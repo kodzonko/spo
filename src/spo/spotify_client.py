@@ -1,5 +1,6 @@
 import os
 import socket
+import webbrowser
 
 import spotipy
 from dotenv import load_dotenv
@@ -200,8 +201,6 @@ class SpotifyClient:
             logger.info("")
 
             # Open in browser
-            import webbrowser
-
             webbrowser.open(auth_url)
 
             # Get redirect URL from user

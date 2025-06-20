@@ -15,3 +15,5 @@ wheels/
 
 .env
 .spo_cache
+
+.coverage

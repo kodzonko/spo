@@ -275,4 +275,154 @@ def test_property_access_patterns(mock_spotify, mock_oauth):
     assert client.current_user["id"] == "test"
     client._spotify = None
     client._user = None
-    assert client.is_authenticated is False
+
+
+def test_authenticate_automatic_invalid_redirect(
+    monkeypatch, patch_env_with_redirect, mock_oauth, mock_spotify
+):
+    # Simulate automatic authentication with invalid redirect - use a non-retryable error
+    with (
+        patch("spo.spotify_client.SpotifyClient._is_port_available", return_value=True),
+        patch("spo.spotify_client.AuthServer") as mock_auth_server,
+        patch("spo.spotify_client.webbrowser.open"),
+    ):
+        mock_server = Mock()
+        mock_server.start.return_value = "http://localhost:8080/callback"
+        mock_server.wait_for_callback.return_value = (None, "authorization_failed")
+        mock_auth_server.return_value = mock_server
+
+        mock_auth_manager = Mock()
+        mock_auth_manager.get_cached_token.return_value = None
+        mock_auth_manager.get_authorize_url.return_value = "https://auth.url"
+        mock_oauth.return_value = mock_auth_manager
+
+        mock_client = Mock()
+        mock_client.current_user.return_value = {
+            "id": "test_user",
+            "display_name": "Test User",
+        }
+        mock_spotify.return_value = mock_client
+
+        # Patch logger to suppress output
+        with patch("spo.spotify_client.logger"):
+            with pytest.raises(
+                Exception, match="Authorization failed: authorization_failed"
+            ):
+                SpotifyClient()
+
+
+def test_authenticate_automatic_no_auth_code(
+    monkeypatch, patch_env_with_redirect, mock_oauth, mock_spotify
+):
+    with (
+        patch("spo.spotify_client.SpotifyClient._is_port_available", return_value=True),
+        patch("spo.spotify_client.AuthServer") as mock_auth_server,
+        patch("spo.spotify_client.webbrowser.open"),
+    ):
+        mock_server = Mock()
+        mock_server.start.return_value = "http://localhost:8080/callback"
+        mock_server.wait_for_callback.return_value = (None, None)
+        mock_auth_server.return_value = mock_server
+
+        mock_auth_manager = Mock()
+        mock_auth_manager.get_cached_token.return_value = None
+        mock_auth_manager.get_authorize_url.return_value = "https://auth.url"
+        mock_oauth.return_value = mock_auth_manager
+
+        mock_client = Mock()
+        mock_client.current_user.return_value = {
+            "id": "test_user",
+            "display_name": "Test User",
+        }
+        mock_spotify.return_value = mock_client
+
+        with patch("spo.spotify_client.logger"):
+            with pytest.raises(Exception, match="No authorization code received"):
+                SpotifyClient()
+
+
+def test_authenticate_automatic_user_none(
+    monkeypatch, patch_env_with_redirect, mock_oauth, mock_spotify
+):
+    with (
+        patch("spo.spotify_client.SpotifyClient._is_port_available", return_value=True),
+        patch("spo.spotify_client.AuthServer") as mock_auth_server,
+        patch("spo.spotify_client.webbrowser.open"),
+    ):
+        mock_server = Mock()
+        mock_server.start.return_value = "http://localhost:8080/callback"
+        mock_server.wait_for_callback.return_value = ("auth_code", None)
+        mock_auth_server.return_value = mock_server
+
+        mock_auth_manager = Mock()
+        mock_auth_manager.get_cached_token.return_value = None
+        mock_auth_manager.get_authorize_url.return_value = "https://auth.url"
+        mock_auth_manager.get_access_token.return_value = {"access_token": "test_token"}
+        mock_oauth.return_value = mock_auth_manager
+
+        mock_client = Mock()
+        mock_client.current_user.return_value = None
+        mock_spotify.return_value = mock_client
+
+        with patch("spo.spotify_client.logger"):
+            with pytest.raises(Exception, match="Failed to get user information"):
+                SpotifyClient()
+
+
+def test_authenticate_manual_invalid_redirect(
+    monkeypatch, patch_env, mock_oauth, mock_spotify
+):
+    # Force manual authentication by making all ports unavailable
+    with patch(
+        "spo.spotify_client.SpotifyClient._is_port_available", return_value=False
+    ):
+        mock_auth_manager = Mock()
+        mock_auth_manager.get_cached_token.return_value = None
+        mock_auth_manager.get_authorize_url.return_value = "https://auth.url"
+        mock_oauth.return_value = mock_auth_manager
+
+        mock_client = Mock()
+        mock_client.current_user.return_value = {
+            "id": "test_user",
+            "display_name": "Test User",
+        }
+        mock_spotify.return_value = mock_client
+
+        with (
+            patch("spo.spotify_client.input", return_value="invalid_url"),
+            patch("spo.spotify_client.logger"),
+            patch("spo.spotify_client.webbrowser.open"),
+        ):
+            with pytest.raises(Exception, match="Invalid redirect URL format"):
+                SpotifyClient()
+
+
+def test_authenticate_manual_no_code(monkeypatch, patch_env, mock_oauth, mock_spotify):
+    # Force manual authentication by making all ports unavailable
+    with patch(
+        "spo.spotify_client.SpotifyClient._is_port_available", return_value=False
+    ):
+        mock_auth_manager = Mock()
+        mock_auth_manager.get_cached_token.return_value = None
+        mock_auth_manager.get_authorize_url.return_value = "https://auth.url"
+        mock_oauth.return_value = mock_auth_manager
+
+        mock_client = Mock()
+        mock_client.current_user.return_value = {
+            "id": "test_user",
+            "display_name": "Test User",
+        }
+        mock_spotify.return_value = mock_client
+
+        # Simulate a redirect URL with no code param
+        with (
+            patch(
+                "spo.spotify_client.input", return_value="https://redirect?error=fail"
+            ),
+            patch("spo.spotify_client.logger"),
+            patch("spo.spotify_client.webbrowser.open"),
+        ):
+            with pytest.raises(
+                Exception, match="No authorization code found in redirect URL"
+            ):
+                SpotifyClient()

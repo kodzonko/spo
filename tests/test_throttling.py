@@ -183,6 +183,58 @@ def test_retry_on_5xx_errors(mock_manager):
     assert call_count == 2
 
 
+def test_calculate_retry_delay_invalid(monkeypatch, manager):
+    # retry_after is a string that cannot be converted to float
+    delay = manager.calculate_retry_delay(0, retry_after="not_a_number")
+    assert isinstance(delay, float)
+
+
+def test_calculate_retry_delay_type_error(manager):
+    # retry_after is a type that raises TypeError
+    delay = manager.calculate_retry_delay(0, retry_after=object())
+    assert isinstance(delay, float)
+
+
+def test_throttle_decorator_unexpected_error(mock_manager):
+    @throttle(manager=mock_manager)
+    def func():
+        raise RuntimeError("unexpected")
+
+    with pytest.raises(RuntimeError, match="unexpected"):
+        func()
+
+
+def test_throttle_decorator_non_retryable_error(mock_manager):
+    class CustomError(Exception):
+        pass
+
+    @throttle(manager=mock_manager)
+    def func():
+        raise CustomError("fail")
+
+    with pytest.raises(CustomError, match="fail"):
+        func()
+
+
+def test_throttle_decorator_all_retries_exhausted(mock_manager):
+    call_count = 0
+
+    class CustomError(Exception):
+        pass
+
+    @throttle(manager=mock_manager)
+    def func():
+        nonlocal call_count
+        call_count += 1
+        raise spotipy.SpotifyException(
+            http_status=429, code=-1, msg="Rate limit exceeded"
+        )
+
+    with pytest.raises(spotipy.SpotifyException):
+        func()
+    assert call_count == mock_manager.max_retries + 1
+
+
 # --- Spotify throttle decorator tests ---
 
 
