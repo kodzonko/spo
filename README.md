@@ -16,16 +16,24 @@ A comprehensive Python tool for synchronizing playlists between Spotify and YouT
 
 ```bash
 # Clone the repository
-git clone <repository-url>
+git clone git@github.com:kodzonko/spo.git
 cd spo
 
 # Install dependencies
-pip install -e .
+uv pip install -e .
 ```
 
 ### Configuration
 
-Create a `.env` file in the project root:
+Create a web application on the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/applications) to obtain your client ID and secret. As per instructions: [Getting started with Web API](https://developer.spotify.com/documentation/web-api/tutorials/getting-started)
+
+The app dashboars should look like this:
+
+<p align="center">
+  <img src="docs/spotify-app-dashboard.jpg" alt="Spotify App Dashboard" width="600"/>
+</p>
+
+Create an `.env` file in the project root:
 
 ```env
 SPOTIFY_CLIENT_ID=your_spotify_client_id
