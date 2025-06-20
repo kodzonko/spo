@@ -23,7 +23,58 @@ class AuthCallbackHandler(BaseHTTPRequestHandler):
 
     server: CallbackHTTPServer  # Type hint for our custom server
 
-    def do_get(self):
+    def do_GET(self):
+        """Handle GET request to capture OAuth callback."""
+        if "/callback" in self.path:
+            # Parse the query parameters from the URL
+            parsed_url = urllib.parse.urlparse(self.path)
+            query_params = urllib.parse.parse_qs(parsed_url.query)
+
+            # Store the authorization code or error
+            if "code" in query_params:
+                self.server.auth_code = query_params["code"][0]
+                response_message = """
+                <html>
+                <body>
+                <h1>✅ Authorization Successful!</h1>
+                <p>You can close this window and return to your application.</p>
+                <script>window.close();</script>
+                </body>
+                </html>
+                """
+                self.send_response(200)
+            elif "error" in query_params:
+                self.server.auth_error = query_params["error"][0]
+                response_message = f"""
+                <html>
+                <body>
+                <h1>❌ Authorization Failed</h1>
+                <p>Error: {query_params["error"][0]}</p>
+                <p>You can close this window.</p>
+                </body>
+                </html>
+                """
+                self.send_response(400)
+            else:
+                response_message = """
+                <html>
+                <body>
+                <h1>❓ Unexpected Response</h1>
+                <p>No authorization code or error found.</p>
+                </body>
+                </html>
+                """
+                self.send_response(400)
+
+            self.send_header("Content-type", "text/html")
+            self.end_headers()
+            self.wfile.write(response_message.encode())
+
+            # Signal that we've received the callback
+            self.server.callback_received = True
+        else:
+            self.send_response(501)
+            self.end_headers()
         """Handle GET request to capture OAuth callback."""
         # Parse the query parameters from the URL
         parsed_url = urllib.parse.urlparse(self.path)
@@ -86,6 +137,7 @@ class AuthServer:
         self.server_thread: Optional[threading.Thread] = None
 
     def start(self) -> str:
+        print(f"Starting server on port {self.port}")
         """
         Start the local server and return the callback URL.
 

@@ -244,17 +244,6 @@ def interactive_feature(self):
 3. **High memory usage**: Check for client ID leaks in per-client mode
 4. **Logs show constant retries**: Check network connectivity and API status
 
-### Debugging
-
-Enable debug logging to see detailed throttling behavior:
-
-```python
-import logging
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger('spo.throttling')
-logger.setLevel(logging.DEBUG)
-```
-
 ### Monitoring Rate Limit Health
 
 ```python

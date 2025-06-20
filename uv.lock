@@ -214,6 +214,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "python-dotenv" },
+    { name = "requests" },
     { name = "spotipy" },
 ]
 
@@ -228,6 +229,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "python-dotenv", specifier = ">=1.0.1" },
+    { name = "requests", extras = ["security"], specifier = ">=2.32.3" },
     { name = "spotipy", specifier = ">=2.25.0" },
 ]
 

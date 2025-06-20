@@ -5,17 +5,12 @@ This module provides decorators to prevent API rate limit violations and handle
 429 (Too Many Requests) responses gracefully with automatic retries.
 """
 
-import logging
 import time
 from collections import defaultdict, deque
 from functools import wraps
 from typing import Any, Callable, Dict, Optional, TypeVar, Union
 
 import spotipy  # type: ignore
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # Type variable for decorated functions
 F = TypeVar("F", bound=Callable[..., Any])
@@ -157,7 +152,6 @@ class ThrottleManager:
         """
         while not self.can_make_request(client_id):
             sleep_time = min(1.0 / self.requests_per_second, 0.1)
-            logger.debug(f"Rate limit reached, waiting {sleep_time:.2f}s...")
             time.sleep(sleep_time)
 
     def calculate_retry_delay(
@@ -284,12 +278,6 @@ def throttle(
 
                     result = func(*args, **kwargs)
 
-                    # Request successful
-                    if attempt > 0:
-                        logger.info(
-                            f"API request {func.__name__} succeeded after {attempt + 1} attempts"
-                        )
-
                     return result
 
                 except spotipy.SpotifyException as e:
@@ -311,11 +299,6 @@ def throttle(
 
                         delay = manager.calculate_retry_delay(attempt, retry_after)
 
-                        logger.warning(
-                            f"Rate limit hit for {func.__name__}, "
-                            f"retrying in {delay:.2f}s (attempt {attempt + 1}/{manager.max_retries + 1})"
-                        )
-
                         time.sleep(delay)
                         continue
 
@@ -329,17 +312,11 @@ def throttle(
 
                         delay = manager.calculate_retry_delay(attempt)
 
-                        logger.warning(
-                            f"Server error {e.http_status} for {func.__name__}, "
-                            f"retrying in {delay:.2f}s (attempt {attempt + 1}/{manager.max_retries + 1})"
-                        )
-
                         time.sleep(delay)
                         continue
 
                     else:
                         # Other errors (4xx client errors) - don't retry
-                        logger.error(f"API request {func.__name__} failed: {e}")
                         raise
 
                 except Exception as e:
@@ -351,32 +328,18 @@ def throttle(
                         for error_type in ["connection", "timeout", "network"]
                     ):
                         if attempt >= manager.max_retries:
-                            logger.error(
-                                f"API request {func.__name__} failed after "
-                                f"{manager.max_retries + 1} attempts: Connection error"
-                            )
                             break
 
                         delay = manager.calculate_retry_delay(attempt)
-
-                        logger.warning(
-                            f"Connection error for {func.__name__}, "
-                            f"retrying in {delay:.2f}s (attempt {attempt + 1}/{manager.max_retries + 1})"
-                        )
 
                         time.sleep(delay)
                         continue
                     else:
                         # Non-retryable error
-                        logger.error(f"API request {func.__name__} failed: {e}")
                         raise
 
             # All retries exhausted
             if last_exception:
-                logger.error(
-                    f"API request {func.__name__} failed permanently after "
-                    f"{manager.max_retries + 1} attempts"
-                )
                 raise last_exception
 
             # This should never happen, but just in case
