@@ -254,7 +254,7 @@ def test_concurrent_client_support():
     def client_id_extractor(*args, **kwargs):
         return kwargs.get("client_id", "default")
 
-    call_counts = {}
+    call_counts: dict[str | None, int] = {}
 
     @throttle(manager=manager, client_id_func=client_id_extractor)
     def test_function(client_id=None):

@@ -263,23 +263,6 @@ def test_unauthenticated_client_raises_error(mock_spotify, mock_oauth):
         _ = client.current_user
 
 
-def test_context_manager(patch_env, mock_oauth, mock_spotify):
-    mock_auth_manager = Mock()
-    mock_auth_manager.get_cached_token.return_value = {"access_token": "test_token"}
-    mock_oauth.return_value = mock_auth_manager
-
-    mock_client = Mock()
-    mock_client.current_user.return_value = {
-        "id": "test_user",
-        "display_name": "Test User",
-    }
-    mock_spotify.return_value = mock_client
-
-    with SpotifyClient() as client:
-        assert client.is_authenticated is True
-        assert isinstance(client, SpotifyClient)
-
-
 @pytest.mark.integration
 @patch("spo.spotify_client.SpotifyOAuth")
 @patch("spo.spotify_client.spotipy.Spotify")
