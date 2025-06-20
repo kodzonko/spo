@@ -5,13 +5,20 @@ description = "A Python application that synchronizes Spotify playlists with You
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "loguru>=0.7.3",
     "python-dotenv>=1.0.1",
  "requests[security]>=2.32.3",
  "spotipy>=2.25.0",
 ]
 
 [dependency-groups]
-dev = ["isort>=6.0.1", "mypy>=1.16.1", "pytest>=8.4.1", "ruff>=0.9.6"]
+dev = [
+    "isort>=6.0.1",
+    "mypy>=1.16.1",
+    "pre-commit>=4.2.0",
+    "pytest>=8.4.1",
+    "ruff>=0.9.6"
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -25,10 +32,12 @@ spo = "src.spo.main:main"
 
 [tool.mypy]
 python_version = "3.13"
+check_untyped_defs = true
 mypy_path = ["src"]
 packages = ["spo"]
 warn_unused_ignores = true
 strict_optional = true
+ignore_missing_imports = true
 
 [tool.ruff]
 src = ["src"]
