@@ -13,8 +13,8 @@ class CallbackHTTPServer(HTTPServer):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.auth_code: Optional[str] = None
-        self.auth_error: Optional[str] = None
+        self.auth_code: str | None = None
+        self.auth_error: str | None = None
         self.callback_received: bool = False
 
 
