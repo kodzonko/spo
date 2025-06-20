@@ -17,3 +17,5 @@ To annotate optional values don't use `Optional`, instead use `Type | None` for 
 When annotaing collections, use the `list`, `dict`, `set`, and `tuple` types directly instead of using `List`, `Dict`, `Set`, and `Tuple` from the `typing` module.
 
 When annotating collections with specific types, use `list[Type]`, `dict[KeyType, ValueType]`, `set[Type]`, and `tuple[Type1, Type2, ...]` instead of `List[Type]`, `Dict[KeyType, ValueType]`, `Set[Type]`, and `Tuple[Type1, Type2, ...]`.
+
+Don't use relative imports.

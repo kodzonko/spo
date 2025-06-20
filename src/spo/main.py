@@ -1,30 +1,33 @@
 """
-Spotify authentication module using Authorization Code Flow.
+Spotify authentication module using Authorization Code Flow with automatic redirect capture.
 """
 
 import os
+import socket
 from typing import Optional
 
 import spotipy  # type: ignore
 from dotenv import load_dotenv
 from spotipy.oauth2 import SpotifyOAuth  # type: ignore
 
+from .auth_server import AuthServer
+
 
 class SpotifyClient:
     """
-    Spotify API client with built-in authentication using Authorization Code Flow.
+    Spotify API client with automatic redirect capture and graceful fallback.
 
-    This client handles authentication automatically during initialization and provides
-    convenient methods for interacting with the Spotify Web API.
+    This client tries automatic redirect capture first (best user experience),
+    then falls back to manual copy-paste if redirect URIs aren't configured.
     """
 
     def __init__(self) -> None:
         """
-        Initialize the Spotify client with authentication.
+        Initialize the Spotify client with robust authentication handling.
 
         Raises:
             ValueError: If required environment variables are missing
-            Exception: If authentication fails
+            Exception: If all authentication methods fail
         """
         self._spotify: Optional[spotipy.Spotify] = None
         self._scopes = "user-library-read playlist-read-private user-read-private"
@@ -34,60 +37,211 @@ class SpotifyClient:
 
     def _authenticate(self) -> None:
         """
-        Authenticate with Spotify using Authorization Code Flow.
+        Authenticate with Spotify using the most appropriate method.
 
-        This authentication method allows access to user-specific data by requesting
-        user authorization through a web browser. The user will be redirected to
-        Spotify's authorization page to grant permissions.
-
-        Raises:
-            ValueError: If required environment variables are missing
-            Exception: If authentication fails
+        Tries automatic capture first, falls back to manual if needed.
         """
-        # Load environment variables from .env file
+        # Load environment variables
         load_dotenv()
 
-        # Get credentials from environment variables
         client_id = os.getenv("SPOTIFY_CLIENT_ID")
         client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
-        redirect_uri = os.getenv("SPOTIFY_REDIRECT_URI", "https://spotify.com/")
 
-        # Validate that credentials are present
         if not client_id or not client_secret:
             raise ValueError(
                 "Missing Spotify credentials. Please ensure SPOTIFY_CLIENT_ID and "
                 "SPOTIFY_CLIENT_SECRET are set in your .env file."
             )
 
+        # Check if automatic capture is possible by looking for localhost redirect URIs
+        redirect_uri = os.getenv("SPOTIFY_REDIRECT_URI", "")
+
+        if "localhost" in redirect_uri.lower():
+            # Try automatic capture with common registered ports
+            registered_ports = [8080, 8081, 8082, 3000, 8000]
+
+            for port in registered_ports:
+                if self._is_port_available(port):
+                    try:
+                        print(f"🚀 Attempting automatic capture on port {port}...")
+                        self._authenticate_automatic(client_id, client_secret, port)
+                        return
+                    except Exception as e:
+                        error_msg = str(e).lower()
+                        if "invalid" in error_msg and (
+                            "redirect" in error_msg or "client" in error_msg
+                        ):
+                            print(f"❌ Port {port} not registered as redirect URI")
+                            continue
+                        else:
+                            # Some other error, re-raise
+                            raise
+
+            # All automatic attempts failed, fall back to manual
+            print(
+                "\n📋 Automatic redirect capture failed - falling back to manual method"
+            )
+            print("\n💡 To enable automatic capture in the future:")
+            print("   1. Go to: https://developer.spotify.com/dashboard")
+            print("   2. Click your app → Edit Settings → Redirect URIs")
+            print("   3. Add: http://localhost:8080/callback")
+            print("   4. Save and try again")
+            print()
+        else:
+            print(
+                "🔧 Using manual authentication (no localhost redirect URI configured)"
+            )
+            print(f"📋 Using redirect URI: {redirect_uri}")
+            print()
+
+        self._authenticate_manual(client_id, client_secret)
+
+    def _authenticate_automatic(
+        self, client_id: str, client_secret: str, port: int
+    ) -> None:
+        """Authenticate using automatic redirect capture."""
+        # Start local server
+        auth_server = AuthServer(port=port)
+        callback_url = auth_server.start()
+
         try:
-            # Create OAuth manager for Authorization Code Flow
+            print(f"🔗 Using redirect URI: {callback_url}")
+            # Create OAuth manager with dynamic redirect URI
             auth_manager = SpotifyOAuth(
                 client_id=client_id,
                 client_secret=client_secret,
-                redirect_uri=redirect_uri,
+                redirect_uri=callback_url,
                 scope=self._scopes,
                 cache_path=self._cache_path,
+                show_dialog=True,
             )
 
-            # Create authenticated Spotify client
-            self._spotify = spotipy.Spotify(auth_manager=auth_manager)
+            # Check for cached token first
+            token_info = auth_manager.get_cached_token()
 
-            # Test the connection by making a simple API call
+            if not token_info:
+                # Get authorization URL and open in browser
+                auth_url = auth_manager.get_authorize_url()
+                print(f"🌐 Opening browser for authorization...")
+                print(f"📋 Authorization URL: {auth_url}")
+                print()
+                print("📝 IMPORTANT: After clicking 'Agree' in Spotify:")
+                print("   1. You should see a success page with green checkmark")
+                print("   2. The browser tab should close automatically")
+                print(
+                    "   3. If you see an error, check your redirect URI configuration"
+                )
+                print()
+
+                import webbrowser
+
+                webbrowser.open(auth_url)
+
+                print("⏳ Waiting for authorization callback...")
+                print(
+                    "💡 If this hangs, try refreshing the browser or check for popup blockers"
+                )
+
+                # Wait for callback
+                auth_code, auth_error = auth_server.wait_for_callback(timeout=120)
+
+                if auth_error:
+                    raise Exception(f"Authorization failed: {auth_error}")
+
+                if not auth_code:
+                    raise Exception("No authorization code received")
+
+                print("✅ Authorization code received!")
+
+                # Exchange code for token
+                token_info = auth_manager.get_access_token(auth_code)
+
+            # Create authenticated client
+            self._spotify = spotipy.Spotify(auth_manager=auth_manager)
             self._user = self._spotify.current_user()
 
             if self._user is None:
                 raise Exception("Failed to get user information")
 
-            print(
-                f"✅ Successfully authenticated with Spotify API using Authorization Code Flow"
-            )
+            print(f"✅ Successfully authenticated using automatic redirect capture!")
             print(
                 f"👤 Logged in as: {self._user['display_name']} (@{self._user['id']})"
             )
 
-        except Exception as e:
-            print(f"❌ Failed to authenticate with Spotify API: {e}")
-            raise
+        finally:
+            auth_server.stop()
+
+    def _authenticate_manual(self, client_id: str, client_secret: str) -> None:
+        """Authenticate using manual copy-paste method."""
+        redirect_uri = os.getenv("SPOTIFY_REDIRECT_URI", "https://spotify.com/")
+        print(f"🔗 Using redirect URI: {redirect_uri}")
+
+        # Create OAuth manager with static redirect URI
+        auth_manager = SpotifyOAuth(
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uri=redirect_uri,
+            scope=self._scopes,
+            cache_path=self._cache_path,
+            show_dialog=True,
+        )
+
+        # Check for cached token first
+        token_info = auth_manager.get_cached_token()
+
+        if not token_info:
+            # Get authorization URL
+            auth_url = auth_manager.get_authorize_url()
+            print(f"🌐 Please visit this URL to authorize the application:")
+            print(f"📋 {auth_url}")
+            print()
+
+            # Open in browser
+            import webbrowser
+
+            webbrowser.open(auth_url)
+
+            # Get redirect URL from user
+            print("After authorizing, you'll be redirected to a URL.")
+            print("Please copy and paste the full redirect URL here:")
+            redirect_response = input("📝 Redirect URL: ").strip()
+
+            # Extract authorization code
+            from urllib.parse import parse_qs, urlparse
+
+            parsed_url = urlparse(redirect_response)
+
+            if parsed_url.query:
+                params = parse_qs(parsed_url.query)
+                if "code" in params:
+                    auth_code = params["code"][0]
+                    print("✅ Authorization code extracted!")
+
+                    # Exchange code for token
+                    token_info = auth_manager.get_access_token(auth_code)
+                else:
+                    raise Exception("No authorization code found in redirect URL")
+            else:
+                raise Exception("Invalid redirect URL format")
+
+        # Create authenticated client
+        self._spotify = spotipy.Spotify(auth_manager=auth_manager)
+        self._user = self._spotify.current_user()
+
+        if self._user is None:
+            raise Exception("Failed to get user information")
+
+        print(f"✅ Successfully authenticated using manual method!")
+        print(f"👤 Logged in as: {self._user['display_name']} (@{self._user['id']})")
+
+    def _is_port_available(self, port: int) -> bool:
+        """Check if a port is available for use."""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("localhost", port))
+                return True
+        except OSError:
+            return False
 
     @property
     def is_authenticated(self) -> bool:
@@ -263,11 +417,13 @@ class SpotifyClient:
 
 def main():
     """
-    Main function to demonstrate the SpotifyClient class usage.
+    Main function to demonstrate the SpotifyClient with automatic redirect capture.
     """
-    print("🎵 Spotify Authorization Code Flow Authentication Demo")
-    print("=" * 55)
-    print("📝 Note: This will open a browser window for user authorization")
+    print("🎵 Spotify Authentication with Automatic Redirect Capture")
+    print("=" * 60)
+    print(
+        "🤖 This client tries automatic capture first, falls back to manual if needed"
+    )
     print()
 
     try:
@@ -314,6 +470,9 @@ def main():
 
     except ValueError as e:
         print(f"❌ Configuration error: {e}")
+        print("\n📝 Please create a .env file with:")
+        print("SPOTIFY_CLIENT_ID=your_client_id")
+        print("SPOTIFY_CLIENT_SECRET=your_client_secret")
     except Exception as e:
         print(f"❌ Authentication failed: {e}")
 
