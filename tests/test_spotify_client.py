@@ -37,13 +37,13 @@ def patch_env_with_redirect():
 
 @pytest.fixture
 def mock_oauth():
-    with patch("src.spo.spotify_client.SpotifyOAuth") as mock_oauth:
+    with patch("spo.spotify_client.SpotifyOAuth") as mock_oauth:
         yield mock_oauth
 
 
 @pytest.fixture
 def mock_spotify():
-    with patch("src.spo.spotify_client.spotipy.Spotify") as mock_spotify:
+    with patch("spo.spotify_client.spotipy.Spotify") as mock_spotify:
         yield mock_spotify
 
 
@@ -252,8 +252,8 @@ def test_get_user_saved_tracks_success(authenticated_client):
     assert results[0]["added_at"] == "2023-01-01T00:00:00Z"
 
 
-@patch("src.spo.spotify_client.SpotifyOAuth")
-@patch("src.spo.spotify_client.spotipy.Spotify")
+@patch("spo.spotify_client.SpotifyOAuth")
+@patch("spo.spotify_client.spotipy.Spotify")
 def test_unauthenticated_client_raises_error(mock_spotify, mock_oauth):
     client = SpotifyClient.__new__(SpotifyClient)
     client._spotify = None
@@ -288,8 +288,8 @@ def test_context_manager(patch_env, mock_oauth, mock_spotify):
 
 
 @pytest.mark.integration
-@patch("src.spo.spotify_client.SpotifyOAuth")
-@patch("src.spo.spotify_client.spotipy.Spotify")
+@patch("spo.spotify_client.SpotifyOAuth")
+@patch("spo.spotify_client.spotipy.Spotify")
 def test_property_access_patterns(mock_spotify, mock_oauth):
     client = SpotifyClient.__new__(SpotifyClient)
     client._spotify = Mock()

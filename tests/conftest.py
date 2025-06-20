@@ -1,5 +1,14 @@
+import os
+import sys
+from unittest.mock import Mock, patch
+
 import pytest
-from unittest.mock import patch, Mock
+
+from spo.throttling import ThrottleManager
+
+sys.path.insert(
+    0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+)
 
 
 @pytest.fixture(autouse=True)
@@ -27,23 +36,6 @@ def patch_spotify_auth_and_client(request):
         mock_spotify.return_value = mock_client
 
         yield
-
-
-import sys
-import os
-
-sys.path.insert(
-    0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
-)
-
-"""
-Pytest configuration and shared fixtures.
-"""
-
-from unittest.mock import Mock
-
-import pytest
-from src.spo.throttling import ThrottleManager
 
 
 @pytest.fixture
