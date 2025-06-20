@@ -1,3 +1,5 @@
+[![Coverage Status](https://coveralls.io/repos/github/kodzonko/spo/badge.svg?branch=master)](https://coveralls.io/github/kodzonko/spo?branch=master)
+
 # SPO - Spotify to YouTube Music Sync
 
 A comprehensive Python tool for synchronizing playlists between Spotify and YouTube Music with built-in API rate limiting and throttling.
