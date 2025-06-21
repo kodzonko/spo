@@ -14,6 +14,9 @@ wheels/
 .idea/
 
 .env
-.spo_cache
+.spo_auth
+.ytmusic_headers.json
+browser.json
+
 
 .coverage

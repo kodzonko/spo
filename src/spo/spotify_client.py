@@ -29,7 +29,7 @@ class SpotifyClient:
         """
         self._spotify: spotipy.Spotify | None = None
         self._scopes = "user-library-read playlist-read-private user-read-private"
-        self._cache_path = ".spo_cache"
+        self._cache_path = ".spo_auth"
         self._user: dict | None = None
         self._authenticate()
 

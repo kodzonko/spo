@@ -373,6 +373,7 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "requests" },
     { name = "spotipy" },
+    { name = "ytmusicapi" },
 ]
 
 [package.dev-dependencies]
@@ -391,6 +392,7 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.1.0" },
     { name = "requests", extras = ["security"], specifier = ">=2.32.4" },
     { name = "spotipy", specifier = ">=2.25.1" },
+    { name = "ytmusicapi", specifier = ">=1.10.3" },
 ]
 
 [package.metadata.requires-dev]
@@ -456,4 +458,16 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/b3/8f/705086c9d734d3b663af0e9bb3d4de6578d08f46b1b101c2442fd9aecaa2/win32_setctime-1.2.0.tar.gz", hash = "sha256:ae1fdf948f5640aae05c511ade119313fb6a30d7eabe25fef9764dca5873c4c0", size = 4867 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e1/07/c6fe3ad3e685340704d314d765b7912993bcb8dc198f0e7a89382d37974b/win32_setctime-1.2.0-py3-none-any.whl", hash = "sha256:95d644c4e708aba81dc3704a116d8cbc974d70b3bdb8be1d150e36be6e9d1390", size = 4083 },
+]
+
+[[package]]
+name = "ytmusicapi"
+version = "1.10.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/87/2e/30b77a0aec8383a5d3b1472e763ff14f845c275c103da78d3c0045cd691a/ytmusicapi-1.10.3.tar.gz", hash = "sha256:7235361ac9d5958d49a29f586eec55b1c83e90f7b063361e8a206e1cf4f76216", size = 311765 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/13/2c/cba9e462497adbf5960fe74fdc5d7bb44153f0037264f3dea7653e5d4969/ytmusicapi-1.10.3-py3-none-any.whl", hash = "sha256:07059d6a60d824636edc4032c30603f45f8072961821c6159e33d61cd02fc451", size = 93484 },
 ]
