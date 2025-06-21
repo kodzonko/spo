@@ -76,8 +76,9 @@ class SpotifyClient:
                             )
                             continue
                         else:
-                            # Some other error, re-raise
-                            raise
+                            # Some other error, try fallback to manual
+                            logger.warning(f"Automatic authentication failed: {e}")
+                            break
 
             # All automatic attempts failed, fall back to manual
             logger.warning(
@@ -244,7 +245,7 @@ class SpotifyClient:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.bind(("localhost", port))
                 return True
-        except OSError:
+        except Exception:
             return False
 
     @property
