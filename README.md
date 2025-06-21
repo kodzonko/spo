@@ -14,17 +14,25 @@
 
 A comprehensive Python tool for synchronizing playlists between Spotify and YouTube Music with built-in API rate limiting and throttling.
 
-## Features
+## 🚀 Features
 
 - **Spotify Integration**: Secure authentication with automatic and manual fallback modes
+- **YouTube Music Integration**: Full support for YouTube Music playlist operations
 - **API Rate Limiting**: Advanced throttling mechanism to prevent rate limit violations
 - **Graceful Error Handling**: Automatic retries with exponential backoff for failed requests
 - **User-Friendly**: Simple setup with environment variable configuration
 - **Robust Authentication**: Handles token refresh and authentication errors automatically
+- **Type Safety**: Full type hints and mypy support
 
-## Quick Start
+## 📦 Installation
 
-### Installation
+### Prerequisites
+
+- Python 3.13 or higher
+- Spotify Developer Account
+- YouTube Music Account
+
+### Setup
 
 ```bash
 # Clone the repository
@@ -33,27 +41,37 @@ cd spo
 
 # Install dependencies
 uv pip install -e .
+
+# Install development dependencies (optional)
+uv pip install -e ".[dev]"
 ```
 
-### Configuration
+## ⚙️ Configuration
 
-Create a web application on the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/applications) to obtain your client ID and secret. As per instructions: [Getting started with Web API](https://developer.spotify.com/documentation/web-api/tutorials/getting-started)
+### Spotify Setup
 
-The app dashboars should look like this:
+1. Create a web application on the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/applications)
+2. Follow the [Getting Started with Web API](https://developer.spotify.com/documentation/web-api/tutorials/getting-started) guide
+3. Your app dashboard should look like this:
 
 <p align="center">
   <img src="docs/spotify-app-dashboard.jpg" alt="Spotify App Dashboard" width="600"/>
 </p>
 
+### Environment Variables
+
 Create an `.env` file in the project root:
 
 ```env
+# Spotify Configuration
 SPOTIFY_CLIENT_ID=your_spotify_client_id
 SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
 SPOTIFY_REDIRECT_URI=http://localhost:8080/callback
 ```
 
-### Basic Usage
+## 🎯 Quick Start
+
+### Basic Spotify Usage
 
 ```python
 from spo.spotify_client import SpotifyClient
@@ -70,7 +88,24 @@ with SpotifyClient() as client:
     saved_tracks = client.get_user_saved_tracks(limit=50)
 ```
 
-## API Rate Limiting
+### YouTube Music Integration
+
+```python
+from spo.youtube_music_client import YouTubeMusicClient
+
+# Initialize YouTube Music client
+with YouTubeMusicClient() as client:
+    # Search for tracks
+    tracks = client.search_tracks("Bohemian Rhapsody", limit=10)
+    
+    # Get user playlists
+    playlists = client.get_user_playlists()
+    
+    # Create or update playlists
+    playlist_id = client.create_playlist("My Synced Playlist", "Description")
+```
+
+## 🔧 API Rate Limiting
 
 This project includes a sophisticated throttling mechanism that prevents API rate limit violations and handles rate limits gracefully.
 
@@ -102,7 +137,7 @@ All Spotify API methods are automatically decorated with `@spotify_throttle()`, 
    ✅ Found 3 tracks in 2.08s
 ```
 
-## Advanced Usage
+## 🛠️ Advanced Usage
 
 ### Custom Throttling
 
@@ -134,7 +169,26 @@ except spotipy.SpotifyException as e:
         print(f"API error: {e}")
 ```
 
-## Testing
+### Playlist Synchronization
+
+```python
+from spo.spotify_client import SpotifyClient
+from spo.youtube_music_client import YouTubeMusicClient
+
+# Sync a playlist from Spotify to YouTube Music
+with SpotifyClient() as spotify, YouTubeMusicClient() as ytmusic:
+    # Get Spotify playlist
+    spotify_playlist = spotify.get_playlist_tracks("spotify_playlist_id")
+    
+    # Create YouTube Music playlist
+    yt_playlist_id = ytmusic.create_playlist("Synced Playlist", "From Spotify")
+    
+    # Add tracks to YouTube Music playlist
+    for track in spotify_playlist:
+        ytmusic.add_tracks_to_playlist(yt_playlist_id, [track])
+```
+
+## 🧪 Testing
 
 Run the test suite:
 
@@ -142,19 +196,16 @@ Run the test suite:
 # Run all tests
 python -m pytest tests/
 
-# Run throttling tests specifically
+# Run specific test files
+python -m pytest tests/test_spotify_client.py -v
+python -m pytest tests/test_youtube_music_client.py -v
 python -m pytest tests/test_throttling.py -v
 
-# Run demo
-python -m spo.demo_throttling
+# Run with coverage
+python -m pytest tests/ --cov=spo --cov-report=html
 ```
 
-## Documentation
-
-- [Throttling Mechanism](docs/throttling.md) - Detailed documentation of the rate limiting system
-- [API Reference](docs/) - Complete API documentation
-
-## Project Structure
+## 📁 Project Structure
 
 ```
 spo/
@@ -162,24 +213,59 @@ spo/
 │   ├── __init__.py
 │   ├── main.py                 # Main application entry point
 │   ├── spotify_client.py       # Spotify API client with throttling
+│   ├── youtube_music_client.py # YouTube Music API client
 │   ├── throttling.py           # Rate limiting and retry logic
 │   ├── auth_server.py          # Authentication server
-│   └── demo_throttling.py      # Throttling demonstration
+│   └── py.typed               # Type hints marker
 ├── tests/
-│   └── test_throttling.py      # Throttling mechanism tests
+│   ├── conftest.py            # Test configuration
+│   ├── test_spotify_client.py # Spotify client tests
+│   ├── test_youtube_music_client.py # YouTube Music client tests
+│   ├── test_throttling.py     # Throttling mechanism tests
+│   └── test_auth_server.py    # Authentication tests
 ├── docs/
-│   └── throttling.md           # Detailed throttling documentation
+│   └── spotify-app-dashboard.jpg # Spotify setup screenshot
+├── pyproject.toml             # Project configuration
+├── uv.lock                    # Dependency lock file
 └── README.md
 ```
 
-## Contributing
+## 🤝 Contributing
+
+We welcome contributions! Please follow these steps:
 
 1. Fork the repository
-2. Create a feature branch
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
 3. Add tests for new functionality
-4. Ensure all tests pass
-5. Submit a pull request
+4. Ensure all tests pass (`python -m pytest tests/`)
+5. Run linting (`ruff check src/ tests/`)
+6. Commit your changes (`git commit -m 'Add amazing feature'`)
+7. Push to the branch (`git push origin feature/amazing-feature`)
+8. Open a Pull Request
 
-## License
+### Development Setup
 
-This project is licensed under the MIT License.
+```bash
+# Install development dependencies
+uv pip install -e ".[dev]"
+
+# Run pre-commit hooks
+pre-commit install
+
+# Run type checking
+mypy src/
+
+# Run linting
+ruff check src/ tests/
+ruff format src/ tests/
+```
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🙏 Acknowledgments
+
+- [Spotipy](https://github.com/spotipy-dev/spotipy) - Spotify Web API wrapper
+- [ytmusicapi](https://github.com/sigma67/ytmusicapi) - YouTube Music API wrapper
+- [Loguru](https://github.com/Delgan/loguru) - Advanced logging library
