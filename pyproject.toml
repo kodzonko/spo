@@ -1,25 +1,30 @@
 [project]
 name = "spo"
 version = "0.1.0"
-description = "A Python application that synchronizes Spotify playlists with YouTube Music"
+description = "A local app for migrating music libraries between streaming services"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.14"
 dependencies = [
+    "fastapi>=0.116.1",
+    "jinja2>=3.1.6",
     "loguru>=0.7.3",
-    "python-dotenv>=1.1.0",
+    "platformdirs>=4.4.0",
+    "python-multipart>=0.0.20",
     "requests[security]>=2.32.4",
     "spotipy>=2.25.1",
+    "uvicorn>=0.35.0",
     "ytmusicapi>=1.10.3",
 ]
 
 [dependency-groups]
 dev = [
     "coveralls>=4.0.1",
-    "mypy>=1.16.1",
+    "httpx>=0.28.1",
     "pre-commit>=4.2.0",
     "pytest>=8.4.1",
     "pytest-cov>=6.2.1",
-    "ruff>=0.12.0"
+    "ruff>=0.12.0",
+    "ty>=0.0.28",
 ]
 
 [build-system]
@@ -30,7 +35,7 @@ build-backend = "hatchling.build"
 src-root = "src"
 
 [project.scripts]
-spo = "src.spo.main:main"
+spo = "spo.main:main"
 
 [tool.mypy]
 python_version = "3.13"
