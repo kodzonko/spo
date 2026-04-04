@@ -5,26 +5,26 @@ description = "A local app for migrating music libraries between streaming servi
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 dependencies = [
-    "fastapi>=0.116.1",
+    "fastapi>=0.135.3",
     "jinja2>=3.1.6",
     "loguru>=0.7.3",
-    "platformdirs>=4.4.0",
-    "python-multipart>=0.0.20",
-    "requests[security]>=2.32.4",
-    "spotipy>=2.25.1",
-    "uvicorn>=0.35.0",
-    "ytmusicapi>=1.10.3",
+    "platformdirs>=4.9.4",
+    "python-multipart>=0.0.22",
+    "requests[security]>=2.33.1",
+    "spotipy>=2.26.0",
+    "uvicorn>=0.43.0",
+    "ytmusicapi>=1.11.5"
 ]
 
 [dependency-groups]
 dev = [
-    "coveralls>=4.0.1",
+    "coveralls>=4.1.0",
     "httpx>=0.28.1",
-    "pre-commit>=4.2.0",
-    "pytest>=8.4.1",
-    "pytest-cov>=6.2.1",
-    "ruff>=0.12.0",
-    "ty>=0.0.28",
+    "pre-commit>=4.5.1",
+    "pytest>=9.0.2",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.15.9",
+    "ty>=0.0.28"
 ]
 
 [build-system]
