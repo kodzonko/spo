@@ -21,7 +21,7 @@
 
 ## Public Interfaces and Types
 
-- CLI entrypoint: `spo web` starts the local app and auto-resumes resumable jobs.
+- CLI entrypoint: `spo` starts the local app and auto-resumes resumable jobs. Keep `spo web` as a compatibility alias while the app has only one user-facing mode.
 - UI pages: `/`, `/connections`, `/sync/new`, `/jobs/<job_id>`, `/history`.
 - REST endpoints: `POST /api/connections/<service>`, `POST /api/connections/<service>/test`, `POST /api/jobs`, `POST /api/jobs/<job_id>/resume`, `POST /api/jobs/<job_id>/cancel`, `GET /api/jobs/<job_id>`, `GET /api/jobs/<job_id>/events`.
 - Enums: `Service = spotify | ytmusic | apple_music`, `CollectionKind = playlist | saved_track | liked_track | saved_album | followed_artist | saved_podcast | saved_episode`, `JobStatus = draft | snapshotting | planning | applying | paused_rate_limit | paused_auth | completed | completed_with_warnings | failed | canceled`.

@@ -17,16 +17,12 @@ The current app is aimed at one-off or occasional migrations. It snapshots the s
 git clone git@github.com:kodzonko/spo.git
 cd spo
 uv sync
-uv run spo web
+uv run spo
 ```
 
 Open [http://127.0.0.1:8899](http://127.0.0.1:8899).
 
-Useful overrides:
-
-```bash
-SPO_DATA_DIR=$PWD/.spo-data uv run spo web --host 127.0.0.1 --port 8899
-```
+`uv run spo web` is still accepted as a compatibility alias.
 
 `SPO_DATA_DIR` controls where the app keeps its database, logs, and local auth files. Without it, `spo` uses the platform app-data directory.
 

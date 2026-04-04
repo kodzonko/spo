@@ -48,3 +48,24 @@ def test_main_web_invokes_uvicorn_with_overrides(tmp_path, monkeypatch):
     assert captured["host"] == "0.0.0.0"
     assert captured["port"] == 9009
     assert settings_dir.exists()
+
+
+def test_main_defaults_to_web_without_subcommand(tmp_path, monkeypatch):
+    settings_dir = tmp_path / "spo-data"
+    monkeypatch.setenv("SPO_DATA_DIR", str(settings_dir))
+
+    captured: dict[str, object] = {}
+
+    def fake_run(app, host: str, port: int) -> None:
+        captured["app"] = app
+        captured["host"] = host
+        captured["port"] = port
+
+    monkeypatch.setattr(main_module.uvicorn, "run", fake_run)
+    monkeypatch.setattr("sys.argv", ["spo"])
+
+    main_module.main()
+
+    assert captured["host"] == "127.0.0.1"
+    assert captured["port"] == 8899
+    assert settings_dir.exists()
