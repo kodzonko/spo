@@ -158,7 +158,9 @@ def test_web_app_handles_spotify_connect_callback_and_event_stream(
     monkeypatch.setattr(
         SpotifyAdapter, "build_authorize_url", staticmethod(fake_build_authorize_url)
     )
-    monkeypatch.setattr(SpotifyAdapter, "exchange_code", staticmethod(fake_exchange_code))
+    monkeypatch.setattr(
+        SpotifyAdapter, "exchange_code", staticmethod(fake_exchange_code)
+    )
     monkeypatch.setattr(SpotifyAdapter, "authenticate", fake_authenticate)
 
     auth_redirect = client.post(
@@ -195,7 +197,9 @@ def test_web_app_handles_spotify_connect_callback_and_event_stream(
         remote_account_id="yt-stream",
         display_name="YT Stream",
     )
-    job_id = app_state.db.create_job(int(updated["id"]), target_account_id, ["saved_track"])
+    job_id = app_state.db.create_job(
+        int(updated["id"]), target_account_id, ["saved_track"]
+    )
     app_state.db.append_event(job_id, "info", "hello stream")
 
     assert client.get(f"/api/jobs/{job_id}").status_code == 200
@@ -232,11 +236,15 @@ async def test_event_stream_endpoint_yields_existing_events(app_state, monkeypat
         remote_account_id="yt-stream",
         display_name="YT Stream",
     )
-    job_id = app_state.db.create_job(source_account_id, target_account_id, ["saved_track"])
+    job_id = app_state.db.create_job(
+        source_account_id, target_account_id, ["saved_track"]
+    )
     app_state.db.append_event(job_id, "info", "hello stream")
 
     route = next(
-        route for route in app.router.routes if getattr(route, "path", "") == "/api/jobs/{job_id}/events"
+        route
+        for route in app.router.routes
+        if getattr(route, "path", "") == "/api/jobs/{job_id}/events"
     )
 
     class FakeRequest:

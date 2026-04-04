@@ -16,6 +16,7 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from jinja2 import DictLoader, Environment, select_autoescape
+from starlette.datastructures import UploadFile
 
 from spo.config import Settings, load_settings
 from spo.exceptions import AuthenticationError, ValidationError
@@ -111,6 +112,15 @@ def _latest_account_for_service(
 ) -> dict[str, Any] | None:
     accounts = db.find_account_by_service(service.value)
     return accounts[0] if accounts else None
+
+
+def _form_int(value: UploadFile | str, field_name: str) -> int:
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail=f"Invalid {field_name}.")
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid {field_name}.") from exc
 
 
 def create_app(state: AppState | None = None) -> FastAPI:
@@ -359,8 +369,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
     @app.post("/api/jobs")
     async def create_job(request: Request) -> RedirectResponse:
         form = await request.form()
-        source_account_id = int(form["source_account_id"])
-        target_account_id = int(form["target_account_id"])
+        source_account_id = _form_int(form["source_account_id"], "source account")
+        target_account_id = _form_int(form["target_account_id"], "target account")
         collection_kinds = [str(value) for value in form.getlist("collection_kinds")]
         if source_account_id == target_account_id:
             return RedirectResponse(

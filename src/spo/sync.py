@@ -262,7 +262,11 @@ class SyncEngine:
                 .isoformat()
             )
             account_id = int(target_account["id"])
-            if self.db.get_job(job_id)["phase"] == JobStatus.SNAPSHOTTING.value:
+            job_state = self.db.get_job(job_id)
+            if (
+                job_state is not None
+                and job_state["phase"] == JobStatus.SNAPSHOTTING.value
+            ):
                 account_id = int(source_account["id"])
             self.db.set_cooldown(
                 account_id=account_id,

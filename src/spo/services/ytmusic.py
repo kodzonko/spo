@@ -104,7 +104,13 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
             return fn(*args, **kwargs)
         except requests.HTTPError as exc:  # pragma: no cover - library internals
             if exc.response is not None and exc.response.status_code == 429:
-                retry_after = exc.response.headers.get("Retry-After")
+                retry_after_value = exc.response.headers.get("Retry-After")
+                retry_after: float | None = None
+                if retry_after_value is not None:
+                    try:
+                        retry_after = float(retry_after_value)
+                    except (TypeError, ValueError):
+                        retry_after = None
                 raise RateLimitError(
                     "YouTube Music rate limit exceeded.", retry_after
                 ) from exc

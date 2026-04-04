@@ -17,7 +17,7 @@ from spo.services.base import StreamingServiceAdapter
 class _BaseFakeAdapter(StreamingServiceAdapter):
     STATE: dict[str, dict[str, Any]] = {}
     service: Service
-    capabilities = AdapterCapabilities(
+    _capabilities = AdapterCapabilities(
         readable=frozenset(CollectionKind),
         writable=frozenset(CollectionKind),
     )
@@ -31,7 +31,9 @@ class _BaseFakeAdapter(StreamingServiceAdapter):
             settings=settings,
         )
         payload_state_key = credential_payload.get("state_key")
-        if payload_state_key is None and isinstance(credential_payload.get("data"), dict):
+        if payload_state_key is None and isinstance(
+            credential_payload.get("data"), dict
+        ):
             payload_state_key = credential_payload["data"].get("state_key")
         self.state_key = str(payload_state_key)
         self.state = self.__class__.STATE[self.state_key]

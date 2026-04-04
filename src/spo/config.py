@@ -38,6 +38,19 @@ def _default_app_data_dir() -> Path:
     )
 
 
+def _coerce_int(value: object, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
+
+
 def load_settings() -> Settings:
     app_data_dir = _default_app_data_dir()
     config_data: dict[str, object] = {}
@@ -54,7 +67,7 @@ def load_settings() -> Settings:
 
     return Settings(
         bind_host=str(config_data.get("bind_host", "127.0.0.1")),
-        bind_port=int(config_data.get("bind_port", 8899)),
+        bind_port=_coerce_int(config_data.get("bind_port", 8899), 8899),
         log_level=str(config_data.get("log_level", "INFO")).upper(),
         app_data_dir=app_data_dir,
         auto_resume=bool(config_data.get("auto_resume", True)),

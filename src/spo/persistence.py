@@ -175,7 +175,9 @@ class Database:
             with closing(self.connect()) as connection:
                 cursor = connection.execute(query, params)
                 connection.commit()
-                return int(cursor.lastrowid)
+                if cursor.lastrowid is None:
+                    raise RuntimeError("Database write did not return a row id.")
+                return cursor.lastrowid
 
     def _write_script(self, statements: list[tuple[str, tuple[Any, ...]]]) -> None:
         with self._lock:

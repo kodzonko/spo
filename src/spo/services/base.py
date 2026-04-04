@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, ClassVar
 
 from spo.config import Settings
 from spo.models import (
@@ -14,8 +14,8 @@ from spo.models import (
 
 
 class StreamingServiceAdapter(ABC):
-    service: Service
-    capabilities: AdapterCapabilities
+    service: ClassVar[Service]
+    _capabilities: ClassVar[AdapterCapabilities]
 
     def __init__(
         self,
@@ -31,6 +31,10 @@ class StreamingServiceAdapter(ABC):
     @property
     def persisted_payload(self) -> dict[str, Any]:
         return self.credential_payload
+
+    @property
+    def capabilities(self) -> AdapterCapabilities:
+        return self.__class__._capabilities
 
     @abstractmethod
     def authenticate(self) -> AccountIdentity:

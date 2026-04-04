@@ -20,11 +20,13 @@ dependencies = [
 dev = [
     "coveralls>=4.1.0",
     "httpx>=0.28.1",
+    "mypy>=1.20.0",
     "pre-commit>=4.5.1",
     "pytest>=9.0.2",
     "pytest-cov>=7.1.0",
     "ruff>=0.15.9",
-    "ty>=0.0.28"
+    "ty>=0.0.28",
+    "types-requests>=2.33.0.20260402",
 ]
 
 [build-system]
