@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from hashlib import sha1
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Sequence
@@ -16,12 +16,12 @@ def utcnow() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
-def json_dumps(value: Any) -> str:
+def json_dumps(value: object) -> str:
     """Serialize a JSON value with stable key ordering."""
     return json.dumps(value, ensure_ascii=True, sort_keys=True)
 
 
-def json_loads(value: str | bytes | None) -> Any:
+def json_loads(value: str | bytes | None) -> object | None:
     """Deserialize a JSON string or return `None` for empty values."""
     if not value:
         return None

@@ -37,6 +37,8 @@ from spo.utils import utcnow
 from spo.web.templates import TEMPLATES
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from starlette.datastructures import UploadFile
 
 template_env = Environment(
@@ -112,7 +114,7 @@ def create_state(settings: Settings | None = None) -> AppState:
     )
 
 
-def render_template(name: str, *, title: str, request: Request, **context: Any) -> HTMLResponse:
+def render_template(name: str, *, title: str, request: Request, **context: object) -> HTMLResponse:
     """Render a named page template inside the shared base layout."""
     body = template_env.get_template(name).render(**context)
     html = template_env.get_template("base.html").render(
@@ -213,7 +215,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
     app_state = state or create_state()
 
     @asynccontextmanager
-    async def lifespan(_app: FastAPI):
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         if app_state.settings.auto_resume:
             app_state.runner.auto_resume()
         yield
@@ -714,7 +716,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         if not app_state.db.get_job(job_id):
             raise HTTPException(status_code=404, detail="Job not found.")
 
-        async def event_stream():
+        async def event_stream() -> AsyncIterator[str]:
             last_id = 0
             while True:
                 if await request.is_disconnected():

@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 class ServiceRegistry:
     """Factory registry for instantiating service adapters."""
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings) -> None:
         """Initialize the registry with built-in adapter factories."""
         self.settings = settings
         self._factories: dict[Service, type[StreamingServiceAdapter]] = {
@@ -110,7 +110,7 @@ def build_queries(work: CanonicalWork) -> list[str]:
 class SyncEngine:
     """Execute synchronization jobs between a source and target service."""
 
-    def __init__(self, db: Database, settings: Settings, registry: ServiceRegistry):
+    def __init__(self, db: Database, settings: Settings, registry: ServiceRegistry) -> None:
         """Initialize the synchronization engine with its dependencies."""
         self.db = db
         self.settings = settings

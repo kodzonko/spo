@@ -1,12 +1,19 @@
+from __future__ import annotations
+
 """Tests for synchronization engine behavior."""
+
+from typing import TYPE_CHECKING
 
 from spo.exceptions import RateLimitError
 from spo.models import CollectionKind, CredentialType, JobStatus, Service
 from spo.utils import utcnow
 from tests.fakes import FakeSpotifyAdapter, FakeYouTubeMusicAdapter
 
+if TYPE_CHECKING:
+    from spo.app import AppState
 
-def test_sync_engine_skips_existing_items_and_resumes_without_duplicates(app_state):
+
+def test_sync_engine_skips_existing_items_and_resumes_without_duplicates(app_state: AppState) -> None:
     """Test that sync skips existing items and does not duplicate them on resume."""
     source_state = {
         "identity": {
@@ -130,8 +137,8 @@ def test_sync_engine_skips_existing_items_and_resumes_without_duplicates(app_sta
 
 
 def test_playlist_sync_merges_into_existing_playlist_and_preserves_target_only_items(
-    app_state,
-):
+    app_state: AppState,
+) -> None:
     """Test that playlist sync merges without removing target-only items."""
     source_state = {
         "identity": {
@@ -273,7 +280,7 @@ def test_playlist_sync_merges_into_existing_playlist_and_preserves_target_only_i
     assert len(target_state["playlist_items"]["yt-playlist-1"]) == 3
 
 
-def test_rate_limited_job_pauses_then_auto_resumes(app_state):
+def test_rate_limited_job_pauses_then_auto_resumes(app_state: AppState) -> None:
     """Test that rate-limited jobs pause and later auto-resume successfully."""
     source_state = {
         "identity": {

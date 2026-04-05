@@ -4,13 +4,13 @@ import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
-from spo.app import create_app
+from spo.app import AppState, create_app
 from spo.models import AccountIdentity, CredentialType, JobStatus, Service
 from spo.services.spotify import SpotifyAdapter
 from tests.fakes import FakeSpotifyAdapter, FakeYouTubeMusicAdapter
 
 
-def test_web_app_renders_pages_and_creates_job(app_state):
+def test_web_app_renders_pages_and_creates_job(app_state: AppState) -> None:
     """Test that the web app renders core pages and creates jobs."""
     FakeSpotifyAdapter.STATE["source"] = {
         "identity": {
@@ -89,7 +89,7 @@ def test_web_app_renders_pages_and_creates_job(app_state):
     }
 
 
-def test_web_app_can_save_and_validate_ytmusic_connection(app_state):
+def test_web_app_can_save_and_validate_ytmusic_connection(app_state: AppState) -> None:
     """Test that YouTube Music headers can be saved and validated."""
     FakeYouTubeMusicAdapter.STATE["connect"] = {
         "identity": {
@@ -134,7 +134,10 @@ def test_web_app_can_save_and_validate_ytmusic_connection(app_state):
     assert "/connections?error=" in invalid.headers["location"]
 
 
-def test_web_app_can_start_and_complete_ytmusic_oauth_connection(app_state, monkeypatch):
+def test_web_app_can_start_and_complete_ytmusic_oauth_connection(
+    app_state: AppState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Test that the YouTube Music OAuth flow can complete successfully."""
     FakeYouTubeMusicAdapter.STATE["yt-oauth"] = {
         "identity": {
@@ -148,11 +151,11 @@ def test_web_app_can_start_and_complete_ytmusic_oauth_connection(app_state, monk
     }
 
     class FakeOAuthCredentials:
-        def __init__(self, client_id: str, client_secret: str):
+        def __init__(self, client_id: str, client_secret: str) -> None:
             assert client_id == "google-client-id"
             assert client_secret == "google-client-secret"
 
-        def get_code(self):
+        def get_code(self) -> dict[str, str | int]:
             return {
                 "device_code": "device-code",
                 "user_code": "ABCD-EFGH",
@@ -161,7 +164,7 @@ def test_web_app_can_start_and_complete_ytmusic_oauth_connection(app_state, monk
                 "expires_in": 600,
             }
 
-        def token_from_code(self, device_code: str):
+        def token_from_code(self, device_code: str) -> dict[str, str | int]:
             assert device_code == "device-code"
             return {
                 "access_token": "oauth-access-token",
@@ -211,15 +214,23 @@ def test_web_app_can_start_and_complete_ytmusic_oauth_connection(app_state, monk
     assert credentials["payload"]["oauth_client"]["client_id"] == "google-client-id"
 
 
-def test_web_app_handles_spotify_connect_callback_and_event_stream(app_state, monkeypatch):
+def test_web_app_handles_spotify_connect_callback_and_event_stream(
+    app_state: AppState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Test that Spotify OAuth callbacks update accounts and expose job events."""
     app = create_app(app_state)
     client = TestClient(app)
 
-    def fake_build_authorize_url(_settings, _payload, state):
+    def fake_build_authorize_url(_settings: object, _payload: dict[str, object], state: str) -> str:
         return f"https://spotify.example/authorize?state={state}"
 
-    def fake_exchange_code(*, _settings, credential_payload, code):
+    def fake_exchange_code(
+        *,
+        _settings: object,
+        credential_payload: dict[str, object],
+        code: str,
+    ) -> dict[str, object]:
         assert code == "oauth-code"
         return {
             **credential_payload,
@@ -230,7 +241,7 @@ def test_web_app_handles_spotify_connect_callback_and_event_stream(app_state, mo
             },
         }
 
-    def fake_authenticate(_self):
+    def fake_authenticate(_self: SpotifyAdapter) -> AccountIdentity:
         return AccountIdentity(
             remote_account_id="spotify-connected",
             display_name="Connected Spotify",
@@ -281,12 +292,15 @@ def test_web_app_handles_spotify_connect_callback_and_event_stream(app_state, mo
     assert client.get("/api/jobs/999999").status_code == 404
 
 
-def test_app_startup_can_auto_resume_jobs(app_state, monkeypatch):
+def test_app_startup_can_auto_resume_jobs(
+    app_state: AppState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Test that app startup triggers auto-resume when enabled."""
     app_state.settings.auto_resume = True
     called = {"count": 0}
 
-    def fake_auto_resume():
+    def fake_auto_resume() -> None:
         called["count"] += 1
 
     monkeypatch.setattr(app_state.runner, "auto_resume", fake_auto_resume)
@@ -298,7 +312,10 @@ def test_app_startup_can_auto_resume_jobs(app_state, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_event_stream_endpoint_yields_existing_events(app_state, monkeypatch):
+async def test_event_stream_endpoint_yields_existing_events(
+    app_state: AppState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Test that the event stream endpoint yields already stored events."""
     app = create_app(app_state)
     source_account_id = app_state.db.upsert_account(
@@ -320,14 +337,14 @@ async def test_event_stream_endpoint_yields_existing_events(app_state, monkeypat
     assert isinstance(route, APIRoute)
 
     class FakeRequest:
-        def __init__(self):
+        def __init__(self) -> None:
             self.calls = 0
 
-        async def is_disconnected(self):
+        async def is_disconnected(self) -> bool:
             self.calls += 1
             return self.calls > 1
 
-    async def immediate_sleep(_seconds):
+    async def immediate_sleep(_seconds: float) -> None:
         return None
 
     monkeypatch.setattr("spo.app.asyncio.sleep", immediate_sleep)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
 import requests
 from ytmusicapi import YTMusic
@@ -26,9 +26,13 @@ from spo.services.base import StreamingServiceAdapter
 from spo.utils import chunked
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from spo.config import Settings
+
+P = ParamSpec("P")
+R = TypeVar("R")
 
 
 class YouTubeMusicAdapter(StreamingServiceAdapter):
@@ -128,7 +132,7 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
             raise AuthenticationError(f"YouTube Music authentication failed: {exc}") from exc
         return self._client
 
-    def _call(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+    def _call(self, fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
         try:
             return fn(*args, **kwargs)
         except requests.HTTPError as exc:  # pragma: no cover - library internals

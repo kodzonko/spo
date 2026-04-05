@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from contextlib import closing
 from threading import RLock
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict, Unpack
 
 from spo.models import JobStatus, TaskState
 from spo.utils import json_dumps, json_loads, utcnow
@@ -45,7 +45,31 @@ TASK_UPDATE_FIELDS = frozenset(
 )
 
 
-def _validate_update_fields(fields: dict[str, Any], allowed_fields: frozenset[str], *, entity: str) -> None:
+class JobUpdateFields(TypedDict, total=False):
+    """Typed partial updates for job rows."""
+
+    current_collection_kind: str | None
+    finished_at: str | None
+    last_error: str | None
+    phase: str
+    resume_token: str | None
+    started_at: str | None
+    status: str
+    updated_at: str
+
+
+class TaskUpdateFields(TypedDict, total=False):
+    """Typed partial updates for task rows."""
+
+    cooldown_until: str | None
+    last_error: str | None
+    payload_json: str
+    state: str
+    target_entity_id: str | None
+    updated_at: str
+
+
+def _validate_update_fields(fields: dict[str, object], allowed_fields: frozenset[str], *, entity: str) -> None:
     unexpected = sorted(set(fields).difference(allowed_fields))
     if unexpected:
         joined = ", ".join(unexpected)
@@ -55,7 +79,7 @@ def _validate_update_fields(fields: dict[str, Any], allowed_fields: frozenset[st
 class Database:
     """Persist application state in a SQLite database."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path) -> None:
         """Initialize the database wrapper for the given file path."""
         self.path = path
         self._lock = RLock()
@@ -447,14 +471,14 @@ class Database:
             row["scope"] = json_loads(row["scope_json"]) or []
         return rows
 
-    def update_job(self, job_id: int, **fields: Any) -> None:
+    def update_job(self, job_id: int, **fields: Unpack[JobUpdateFields]) -> None:
         """Apply a partial update to a job row."""
         if not fields:
             return
-        fields["updated_at"] = utcnow()
-        _validate_update_fields(fields, JOB_UPDATE_FIELDS, entity="job")
-        assignments = ", ".join(f"{key} = ?" for key in fields)
-        params = (*fields.values(), job_id)
+        updated_fields: dict[str, object] = {**fields, "updated_at": utcnow()}
+        _validate_update_fields(updated_fields, JOB_UPDATE_FIELDS, entity="job")
+        assignments = ", ".join(f"{key} = ?" for key in updated_fields)
+        params = (*updated_fields.values(), job_id)
         query = f"UPDATE jobs SET {assignments} WHERE id = ?"  # noqa: S608 - keys validated against JOB_UPDATE_FIELDS
         self._write(query, params)
 
@@ -733,14 +757,14 @@ class Database:
             row["payload"] = json_loads(row["payload_json"])
         return rows
 
-    def update_task(self, task_id: int, **fields: Any) -> None:
+    def update_task(self, task_id: int, **fields: Unpack[TaskUpdateFields]) -> None:
         """Apply a partial update to a task row."""
         if not fields:
             return
-        fields["updated_at"] = utcnow()
-        _validate_update_fields(fields, TASK_UPDATE_FIELDS, entity="task")
-        assignments = ", ".join(f"{key} = ?" for key in fields)
-        params = (*fields.values(), task_id)
+        updated_fields: dict[str, object] = {**fields, "updated_at": utcnow()}
+        _validate_update_fields(updated_fields, TASK_UPDATE_FIELDS, entity="task")
+        assignments = ", ".join(f"{key} = ?" for key in updated_fields)
+        params = (*updated_fields.values(), task_id)
         query = f"UPDATE tasks SET {assignments} WHERE id = ?"  # noqa: S608 - keys validated against TASK_UPDATE_FIELDS
         self._write(query, params)
 

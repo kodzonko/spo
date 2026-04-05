@@ -13,11 +13,12 @@ from spo.sync import JobRunner, ServiceRegistry, SyncEngine
 from tests.fakes import FakeSpotifyAdapter, FakeYouTubeMusicAdapter
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
 
 @pytest.fixture(autouse=True)
-def reset_fake_state():
+def reset_fake_state() -> Iterator[None]:
     """Reset fake adapter state before each test."""
     FakeSpotifyAdapter.STATE = {}
     FakeYouTubeMusicAdapter.STATE = {}

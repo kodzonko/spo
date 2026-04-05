@@ -37,7 +37,7 @@ def normalize_text(value: str | None) -> str:
     return SPACE_PATTERN.sub(" ", normalized).strip()
 
 
-def _parse_duration_ms(value: Any) -> int | None:
+def _parse_duration_ms(value: object) -> int | None:
     if value is None:
         return None
     if isinstance(value, int):

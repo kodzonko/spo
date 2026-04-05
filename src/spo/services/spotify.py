@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 from urllib.parse import urlparse
 
 import spotipy
@@ -24,6 +24,9 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from spo.config import Settings
+
+P = ParamSpec("P")
+R = TypeVar("R")
 
 SPOTIFY_SCOPES = (
     "user-library-read "
@@ -161,7 +164,7 @@ class SpotifyAdapter(StreamingServiceAdapter):
         )
         return self._client
 
-    def _call(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    def _call(self, fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
         try:
             return fn(*args, **kwargs)
         except spotipy.SpotifyException as exc:  # pragma: no cover - behavior from library
