@@ -45,10 +45,13 @@ src = ["src"]
 quote-style = "double"
 indent-style = "space"
 line-ending = "lf"
+skip-magic-trailing-comma = false
 
 [tool.ruff.lint]
 select = ["ALL"]
 ignore = [
+    "COM812", # handled by ruff format
+    "COM819", # handled by ruff format
     "D203", # incorrect-blank-line-before-class
     "D211", #  no-blank-line-before-class
     "D212"  # multi-line-summary-first-line

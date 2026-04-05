@@ -20,3 +20,10 @@ Option A was banning all dynamic SQL query assembly in the persistence layer.
 Option B was allowing dynamic `UPDATE` fragments only after validating each column name against an explicit allow-list, and documenting the remaining Ruff false positive inline.
 
 This repository now uses option B because `update_job` and `update_task` need partial updates, but the allow-lists keep the query surface bounded to known columns.
+
+## Trailing Commas With Ruff Formatter
+
+Option A was keeping `flake8-commas` enforcement rules like `COM812` and `COM819` enabled alongside `ruff format`.
+Option B was letting `ruff format` own trailing-comma normalization and explicitly ignoring the conflicting lint rules.
+
+This repository now uses option B because Ruff's formatter already adds and removes trailing commas consistently, so leaving `COM812` or `COM819` enabled only produces formatter-compatibility warnings without providing stronger guarantees.
