@@ -27,3 +27,10 @@ Option A was keeping `flake8-commas` enforcement rules like `COM812` and `COM819
 Option B was letting `ruff format` own trailing-comma normalization and explicitly ignoring the conflicting lint rules.
 
 This repository now uses option B because Ruff's formatter already adds and removes trailing commas consistently, so leaving `COM812` or `COM819` enabled only produces formatter-compatibility warnings without providing stronger guarantees.
+
+## Magic Values And HTTP Status Codes
+
+Option A was leaving comparison thresholds and HTTP status codes inline and silencing `PLR2004` where they appeared.
+Option B was keeping Ruff's magic-value rule enabled, moving domain thresholds to named module constants, and using `requests.codes` for HTTP status comparisons.
+
+This repository now uses option B because it makes matching heuristics explicit, keeps transport-layer status handling consistent across adapters and tests, and avoids weakening the lint rule globally.

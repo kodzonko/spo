@@ -9,6 +9,8 @@ from spo.models import CollectionKind, CredentialType, JobStatus, Service
 from spo.utils import utcnow
 from tests.fakes import FakeSpotifyAdapter, FakeYouTubeMusicAdapter
 
+EXPECTED_PLAYLIST_ITEM_COUNT = 3
+
 if TYPE_CHECKING:
     from spo.app import AppState
 
@@ -277,7 +279,7 @@ def test_playlist_sync_merges_into_existing_playlist_and_preserves_target_only_i
     assert job["status"] == JobStatus.COMPLETED_WITH_WARNINGS.value
     assert target_state.get("created_playlists", []) == []
     assert target_state["playlist_add_calls"] == [("yt-playlist-1", ["yt-track-1", "yt-track-2"])]
-    assert len(target_state["playlist_items"]["yt-playlist-1"]) == 3
+    assert len(target_state["playlist_items"]["yt-playlist-1"]) == EXPECTED_PLAYLIST_ITEM_COUNT
 
 
 def test_rate_limited_job_pauses_then_auto_resumes(app_state: AppState) -> None:

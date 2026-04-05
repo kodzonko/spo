@@ -1,6 +1,7 @@
 """Tests for the FastAPI web application flows."""
 
 import pytest
+import requests
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
@@ -8,6 +9,10 @@ from spo.app import AppState, create_app
 from spo.models import AccountIdentity, CredentialType, JobStatus, Service
 from spo.services.spotify import SpotifyAdapter
 from tests.fakes import FakeSpotifyAdapter, FakeYouTubeMusicAdapter
+
+HTTP_OK = int(requests.codes["ok"])
+HTTP_SEE_OTHER = int(requests.codes["see_other"])
+HTTP_NOT_FOUND = int(requests.codes["not_found"])
 
 
 def test_web_app_renders_pages_and_creates_job(app_state: AppState) -> None:
@@ -58,9 +63,9 @@ def test_web_app_renders_pages_and_creates_job(app_state: AppState) -> None:
 
     client = TestClient(create_app(app_state))
 
-    assert client.get("/").status_code == 200
-    assert client.get("/connections").status_code == 200
-    assert client.get("/sync/new").status_code == 200
+    assert client.get("/").status_code == HTTP_OK
+    assert client.get("/connections").status_code == HTTP_OK
+    assert client.get("/sync/new").status_code == HTTP_OK
 
     response = client.post(
         "/api/jobs",
@@ -72,15 +77,15 @@ def test_web_app_renders_pages_and_creates_job(app_state: AppState) -> None:
         follow_redirects=False,
     )
 
-    assert response.status_code == 303
+    assert response.status_code == HTTP_SEE_OTHER
     location = response.headers["location"]
     assert location.startswith("/jobs/")
 
     app_state.runner.wait()
     detail = client.get(location)
-    assert detail.status_code == 200
+    assert detail.status_code == HTTP_OK
     history = client.get("/history")
-    assert history.status_code == 200
+    assert history.status_code == HTTP_OK
     jobs = app_state.db.list_jobs()
     assert len(jobs) == 1
     assert jobs[0]["status"] in {
@@ -110,7 +115,7 @@ def test_web_app_can_save_and_validate_ytmusic_connection(app_state: AppState) -
         follow_redirects=False,
     )
 
-    assert response.status_code == 303
+    assert response.status_code == HTTP_SEE_OTHER
     assert "/connections?message=" in response.headers["location"]
 
     accounts = app_state.db.find_account_by_service(Service.YTMUSIC.value)
@@ -122,7 +127,7 @@ def test_web_app_can_save_and_validate_ytmusic_connection(app_state: AppState) -
     assert credentials["payload"]["data"]["state_key"] == "connect"
 
     test_response = client.post("/api/connections/ytmusic/test")
-    assert test_response.status_code == 200
+    assert test_response.status_code == HTTP_OK
     assert test_response.json()["display_name"] == "Connected YT Music"
 
     invalid = client.post(
@@ -130,7 +135,7 @@ def test_web_app_can_save_and_validate_ytmusic_connection(app_state: AppState) -
         data={"headers_json": "{not-json}"},
         follow_redirects=False,
     )
-    assert invalid.status_code == 303
+    assert invalid.status_code == HTTP_SEE_OTHER
     assert "/connections?error=" in invalid.headers["location"]
 
 
@@ -187,18 +192,18 @@ def test_web_app_can_start_and_complete_ytmusic_oauth_connection(
         },
         follow_redirects=False,
     )
-    assert start.status_code == 303
+    assert start.status_code == HTTP_SEE_OTHER
     flow_url = start.headers["location"]
     assert flow_url.startswith("/connections/ytmusic/oauth/")
 
     flow_page = client.get(flow_url)
-    assert flow_page.status_code == 200
+    assert flow_page.status_code == HTTP_OK
     assert "Continue with Google" in flow_page.text
     assert "ABCD-EFGH" in flow_page.text
 
     flow_id = flow_url.rsplit("/", maxsplit=1)[-1]
     status = client.get(f"/api/connections/ytmusic/oauth/{flow_id}/status")
-    assert status.status_code == 200
+    assert status.status_code == HTTP_OK
     assert status.json()["status"] == "connected"
     assert "/connections?message=" in status.json()["redirect_url"]
 
@@ -260,7 +265,7 @@ def test_web_app_handles_spotify_connect_callback_and_event_stream(
         },
         follow_redirects=False,
     )
-    assert auth_redirect.status_code == 303
+    assert auth_redirect.status_code == HTTP_SEE_OTHER
     assert auth_redirect.headers["location"].startswith("https://spotify.example/")
 
     accounts = app_state.db.find_account_by_service(Service.SPOTIFY.value)
@@ -272,7 +277,7 @@ def test_web_app_handles_spotify_connect_callback_and_event_stream(
         f"/callback/spotify?code=oauth-code&state={oauth_state}",
         follow_redirects=False,
     )
-    assert callback_redirect.status_code == 303
+    assert callback_redirect.status_code == HTTP_SEE_OTHER
     assert "/connections?message=" in callback_redirect.headers["location"]
 
     updated = app_state.db.find_account_by_service(Service.SPOTIFY.value)[0]
@@ -288,8 +293,8 @@ def test_web_app_handles_spotify_connect_callback_and_event_stream(
     job_id = app_state.db.create_job(int(updated["id"]), target_account_id, ["saved_track"])
     app_state.db.append_event(job_id, "info", "hello stream")
 
-    assert client.get(f"/api/jobs/{job_id}").status_code == 200
-    assert client.get("/api/jobs/999999").status_code == 404
+    assert client.get(f"/api/jobs/{job_id}").status_code == HTTP_OK
+    assert client.get("/api/jobs/999999").status_code == HTTP_NOT_FOUND
 
 
 def test_app_startup_can_auto_resume_jobs(
@@ -306,7 +311,7 @@ def test_app_startup_can_auto_resume_jobs(
     monkeypatch.setattr(app_state.runner, "auto_resume", fake_auto_resume)
 
     with TestClient(create_app(app_state)) as client:
-        assert client.get("/").status_code == 200
+        assert client.get("/").status_code == HTTP_OK
 
     assert called["count"] >= 1
 

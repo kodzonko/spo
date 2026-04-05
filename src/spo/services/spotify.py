@@ -6,6 +6,7 @@ import time
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 from urllib.parse import urlparse
 
+import requests
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
@@ -39,6 +40,8 @@ SPOTIFY_SCOPES = (
     "user-follow-modify "
     "user-read-private"
 )
+HTTP_TOO_MANY_REQUESTS = int(requests.codes["too_many_requests"])
+HTTP_UNAUTHORIZED = int(requests.codes["unauthorized"])
 
 
 class SpotifyAdapter(StreamingServiceAdapter):
@@ -168,12 +171,12 @@ class SpotifyAdapter(StreamingServiceAdapter):
         try:
             return fn(*args, **kwargs)
         except spotipy.SpotifyException as exc:  # pragma: no cover - behavior from library
-            if exc.http_status == 429:
+            if exc.http_status == HTTP_TOO_MANY_REQUESTS:
                 retry_after = None
                 headers = getattr(exc, "headers", None) or {}
                 retry_after = headers.get("Retry-After") or headers.get("retry-after")
                 raise RateLimitError("Spotify rate limit exceeded.", retry_after) from exc
-            if exc.http_status == 401:
+            if exc.http_status == HTTP_UNAUTHORIZED:
                 raise AuthenticationError("Spotify access token is invalid.") from exc
             raise
 

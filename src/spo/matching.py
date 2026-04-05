@@ -14,6 +14,13 @@ from spo.utils import stable_hash
 FEAT_PATTERN = re.compile(r"\b(feat|ft|featuring)\.?\b", re.IGNORECASE)
 PUNCT_PATTERN = re.compile(r"[^\w\s]")
 SPACE_PATTERN = re.compile(r"\s+")
+SECONDS_DURATION_CUTOFF = 10_000
+YEAR_PREFIX_LENGTH = 4
+EXACT_DURATION_DELTA_MS = 2_000
+CLOSE_DURATION_DELTA_MS = 8_000
+MATCH_ACCEPT_SCORE = 0.80
+MATCH_ACCEPT_WITH_GAP_SCORE = 0.65
+MATCH_ACCEPT_MIN_GAP = 0.10
 
 
 @dataclass(slots=True)
@@ -41,7 +48,7 @@ def _parse_duration_ms(value: object) -> int | None:
     if value is None:
         return None
     if isinstance(value, int):
-        if value > 10_000:
+        if value > SECONDS_DURATION_CUTOFF:
             return value
         return value * 1000
     if isinstance(value, float):
@@ -102,8 +109,10 @@ def _extract_year(raw: dict[str, Any]) -> int | None:
             return value
     for key in ("release_date", "published", "publishedAt"):
         value = raw.get(key)
-        if isinstance(value, str) and len(value) >= 4 and value[:4].isdigit():
-            return int(value[:4])
+        if isinstance(value, str) and len(value) >= YEAR_PREFIX_LENGTH:
+            year_prefix = value[:YEAR_PREFIX_LENGTH]
+            if year_prefix.isdigit():
+                return int(year_prefix)
     return None
 
 
@@ -171,7 +180,7 @@ def work_similarity(left: CanonicalWork, right: CanonicalWork) -> float:
     duration_score = 0.0
     if left.duration_ms and right.duration_ms:
         delta = abs(left.duration_ms - right.duration_ms)
-        duration_score = 1.0 if delta <= 2_000 else 0.5 if delta <= 8_000 else 0.0
+        duration_score = 1.0 if delta <= EXACT_DURATION_DELTA_MS else 0.5 if delta <= CLOSE_DURATION_DELTA_MS else 0.0
 
     year_score = 0.0
     if left.year and right.year:
@@ -230,7 +239,9 @@ def choose_best_match(source: CanonicalWork, candidates: list[dict[str, Any]], t
     scored.sort(key=lambda item: item[0], reverse=True)
     best_score, best_candidate, _ = scored[0]
     second_score = scored[1][0] if len(scored) > 1 else 0.0
-    accepted = best_score >= 0.80 or (best_score >= 0.65 and best_score - second_score >= 0.10)
+    accepted = best_score >= MATCH_ACCEPT_SCORE or (
+        best_score >= MATCH_ACCEPT_WITH_GAP_SCORE and best_score - second_score >= MATCH_ACCEPT_MIN_GAP
+    )
     return MatchResult(
         candidate=best_candidate,
         score=best_score,

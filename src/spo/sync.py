@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from spo.services.base import StreamingServiceAdapter
 
 logger = logging.getLogger(__name__)
+PLAYLIST_NAME_REUSE_THRESHOLD = 0.85
 
 
 class ServiceRegistry:
@@ -708,7 +709,7 @@ class SyncEngine:
                 best_score = score
                 best_match = candidate
 
-        if best_match and best_score >= 0.85:
+        if best_match and best_score >= PLAYLIST_NAME_REUSE_THRESHOLD:
             return {
                 "id": remote_item_id(best_match),
                 "name": best_match.get("name") or best_match.get("title"),

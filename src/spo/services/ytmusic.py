@@ -33,6 +33,9 @@ if TYPE_CHECKING:
 
 P = ParamSpec("P")
 R = TypeVar("R")
+HTTP_TOO_MANY_REQUESTS = int(requests.codes["too_many_requests"])
+HTTP_UNAUTHORIZED = int(requests.codes["unauthorized"])
+HTTP_FORBIDDEN = int(requests.codes["forbidden"])
 
 
 class YouTubeMusicAdapter(StreamingServiceAdapter):
@@ -136,7 +139,7 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
         try:
             return fn(*args, **kwargs)
         except requests.HTTPError as exc:  # pragma: no cover - library internals
-            if exc.response is not None and exc.response.status_code == 429:
+            if exc.response is not None and exc.response.status_code == HTTP_TOO_MANY_REQUESTS:
                 retry_after_value = exc.response.headers.get("Retry-After")
                 retry_after: float | None = None
                 if retry_after_value is not None:
@@ -145,7 +148,10 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
                     except TypeError, ValueError:
                         retry_after = None
                 raise RateLimitError("YouTube Music rate limit exceeded.", retry_after) from exc
-            if exc.response is not None and exc.response.status_code in {401, 403}:
+            if exc.response is not None and exc.response.status_code in {
+                HTTP_UNAUTHORIZED,
+                HTTP_FORBIDDEN,
+            }:
                 raise AuthenticationError("YouTube Music credentials are invalid.") from exc
             raise
 
