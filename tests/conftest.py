@@ -20,11 +20,11 @@ if TYPE_CHECKING:
 @pytest.fixture(autouse=True)
 def reset_fake_state() -> Iterator[None]:
     """Reset fake adapter state before each test."""
-    FakeSpotifyAdapter.STATE = {}
-    FakeYouTubeMusicAdapter.STATE = {}
+    FakeSpotifyAdapter.shared_state = {}
+    FakeYouTubeMusicAdapter.shared_state = {}
     yield
-    FakeSpotifyAdapter.STATE = {}
-    FakeYouTubeMusicAdapter.STATE = {}
+    FakeSpotifyAdapter.shared_state = {}
+    FakeYouTubeMusicAdapter.shared_state = {}
 
 
 @pytest.fixture

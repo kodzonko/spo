@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 
 class _BaseFakeAdapter(StreamingServiceAdapter):
-    STATE: ClassVar[dict[str, dict[str, Any]]] = {}
+    shared_state: ClassVar[dict[str, dict[str, Any]]] = {}
     service: Service
     _capabilities = AdapterCapabilities(
         readable=frozenset(CollectionKind),
@@ -36,7 +36,7 @@ class _BaseFakeAdapter(StreamingServiceAdapter):
         if payload_state_key is None and isinstance(credential_payload.get("data"), dict):
             payload_state_key = credential_payload["data"].get("state_key")
         self.state_key = str(payload_state_key)
-        self.state = self.__class__.STATE[self.state_key]
+        self.state = self.__class__.shared_state[self.state_key]
 
     def authenticate(self) -> AccountIdentity:
         self._consume_effect("authenticate_effects")

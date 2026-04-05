@@ -45,25 +45,30 @@ def normalize_text(value: str | None) -> str:
     return SPACE_PATTERN.sub(" ", normalized).strip()
 
 
+def _parse_clock_duration_ms(value: str) -> int | None:
+    """Parse clock-like duration strings such as MM:SS into milliseconds."""
+    parts = [int(part) for part in value.split(":") if part.isdigit()]
+    if not parts:
+        return None
+
+    total_seconds = 0
+    for part in parts:
+        total_seconds = total_seconds * 60 + part
+    return total_seconds * 1000
+
+
 def _parse_duration_ms(value: object) -> int | None:
-    duration_ms: int | None = None
     if value is None:
-        return duration_ms
+        return None
     if isinstance(value, int):
-        duration_ms = value if value > SECONDS_DURATION_CUTOFF else value * 1000
-    elif isinstance(value, float):
-        duration_ms = int(value * 1000)
-    elif isinstance(value, str):
+        return value if value > SECONDS_DURATION_CUTOFF else value * 1000
+    if isinstance(value, float):
+        return int(value * 1000)
+    if isinstance(value, str):
         if value.isdigit():
-            duration_ms = int(value)
-        else:
-            parts = [int(part) for part in value.split(":") if part.isdigit()]
-            if parts:
-                total_seconds = 0
-                for part in parts:
-                    total_seconds = total_seconds * 60 + part
-                duration_ms = total_seconds * 1000
-    return duration_ms
+            return int(value)
+        return _parse_clock_duration_ms(value)
+    return None
 
 
 def _coerce_artist_name(value: object) -> str | None:
@@ -78,11 +83,7 @@ def _coerce_artist_name(value: object) -> str | None:
 def _extract_artists(raw: dict[str, Any]) -> list[str]:
     artists_payload = raw.get("artists")
     if isinstance(artists_payload, list):
-        artists = [
-            artist_name
-            for item in artists_payload
-            if (artist_name := _coerce_artist_name(item)) is not None
-        ]
+        artists = [artist_name for item in artists_payload if (artist_name := _coerce_artist_name(item)) is not None]
         if artists:
             return artists
 
@@ -164,38 +165,64 @@ def canonicalize(service: Service, kind: CollectionKind, source_id: str, raw: di
     return work
 
 
+def _has_matching_external_id(left: CanonicalWork, right: CanonicalWork) -> bool:
+    """Return whether the two works share any equal external identifier."""
+    if not left.external_ids or not right.external_ids:
+        return False
+    shared_keys = set(left.external_ids).intersection(right.external_ids)
+    return any(left.external_ids[key] == right.external_ids[key] for key in shared_keys)
+
+
+def _normalized_creators(creators: list[str]) -> str:
+    """Return a stable, normalized creator string suitable for fuzzy comparison."""
+    return " ".join(sorted(normalize_text(value) for value in creators))
+
+
+def _duration_similarity(left_duration_ms: int | None, right_duration_ms: int | None) -> float:
+    """Score duration closeness using exact and near thresholds."""
+    if not left_duration_ms or not right_duration_ms:
+        return 0.0
+    delta = abs(left_duration_ms - right_duration_ms)
+    if delta <= EXACT_DURATION_DELTA_MS:
+        return 1.0
+    if delta <= CLOSE_DURATION_DELTA_MS:
+        return 0.5
+    return 0.0
+
+
+def _year_similarity(left_year: int | None, right_year: int | None) -> float:
+    """Score release year equality when both years are present."""
+    if not left_year or not right_year:
+        return 0.0
+    return 1.0 if left_year == right_year else 0.0
+
+
+def _explicit_similarity(left_explicit: object | None, right_explicit: object | None) -> float:
+    """Score explicit flag equality when both flags are provided."""
+    if left_explicit is None or right_explicit is None:
+        return 0.0
+    return 1.0 if left_explicit == right_explicit else 0.0
+
+
 def work_similarity(left: CanonicalWork, right: CanonicalWork) -> float:
     """Score how closely two canonical works represent the same media."""
-    if left.external_ids and right.external_ids:
-        shared_keys = set(left.external_ids).intersection(right.external_ids)
-        for key in shared_keys:
-            if left.external_ids[key] == right.external_ids[key]:
-                return 1.0
+    if _has_matching_external_id(left, right):
+        return 1.0
 
     title_score = SequenceMatcher(None, normalize_text(left.title), normalize_text(right.title)).ratio()
     creator_score = SequenceMatcher(
         None,
-        " ".join(sorted(normalize_text(value) for value in left.primary_creators)),
-        " ".join(sorted(normalize_text(value) for value in right.primary_creators)),
+        _normalized_creators(left.primary_creators),
+        _normalized_creators(right.primary_creators),
     ).ratio()
     container_score = SequenceMatcher(
         None,
         normalize_text(left.container_title),
         normalize_text(right.container_title),
     ).ratio()
-
-    duration_score = 0.0
-    if left.duration_ms and right.duration_ms:
-        delta = abs(left.duration_ms - right.duration_ms)
-        duration_score = 1.0 if delta <= EXACT_DURATION_DELTA_MS else 0.5 if delta <= CLOSE_DURATION_DELTA_MS else 0.0
-
-    year_score = 0.0
-    if left.year and right.year:
-        year_score = 1.0 if left.year == right.year else 0.0
-
-    explicit_score = 0.0
-    if left.explicit is not None and right.explicit is not None:
-        explicit_score = 1.0 if left.explicit == right.explicit else 0.0
+    duration_score = _duration_similarity(left.duration_ms, right.duration_ms)
+    year_score = _year_similarity(left.year, right.year)
+    explicit_score = _explicit_similarity(left.explicit, right.explicit)
 
     return round(
         (title_score * 0.45)
@@ -254,7 +281,7 @@ def choose_best_match(source: CanonicalWork, candidates: list[dict[str, Any]], t
         score=best_score,
         gap=round(best_score - second_score, 4),
         accepted=accepted,
-        method="external_id" if best_score == 1.0 else "fuzzy",
+        method="external_id" if best_score >= 1.0 else "fuzzy",
     )
 
 

@@ -1117,18 +1117,26 @@ class JobRunner:
         )
         self.db.append_event(job_id, "warning", "Synchronization canceled.")
 
+    def _job_ready_for_auto_resume(self, job: dict[str, Any]) -> bool:
+        """Return whether an incomplete job is currently eligible for auto-resume."""
+        if job["status"] != JobStatus.PAUSED_RATE_LIMIT.value:
+            return True
+
+        resume_token = job.get("resume_token")
+        if not resume_token:
+            return True
+
+        try:
+            ready_at = datetime.fromisoformat(resume_token)
+        except ValueError:
+            return True
+        return ready_at <= datetime.now(UTC)
+
     def auto_resume(self) -> None:
         """Resume incomplete jobs that are eligible to run again."""
         for job in self.db.list_incomplete_jobs():
-            if job["status"] == JobStatus.PAUSED_RATE_LIMIT.value:
-                resume_token = job.get("resume_token")
-                if resume_token:
-                    try:
-                        ready_at = datetime.fromisoformat(resume_token)
-                    except ValueError:
-                        ready_at = datetime.now(UTC)
-                    if ready_at > datetime.now(UTC):
-                        continue
+            if not self._job_ready_for_auto_resume(job):
+                continue
             try:
                 self.start(int(job["id"]))
             except RuntimeError:

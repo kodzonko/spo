@@ -92,8 +92,8 @@ def test_sync_engine_skips_existing_items_and_resumes_without_duplicates(app_sta
             },
         },
     }
-    FakeSpotifyAdapter.STATE["source"] = source_state
-    FakeYouTubeMusicAdapter.STATE["target"] = target_state
+    FakeSpotifyAdapter.shared_state["source"] = source_state
+    FakeYouTubeMusicAdapter.shared_state["target"] = target_state
 
     source_account_id = app_state.db.upsert_account(
         AccountUpsert(
@@ -245,8 +245,8 @@ def test_playlist_sync_merges_into_existing_playlist_and_preserves_target_only_i
             },
         },
     }
-    FakeSpotifyAdapter.STATE["source"] = source_state
-    FakeYouTubeMusicAdapter.STATE["target"] = target_state
+    FakeSpotifyAdapter.shared_state["source"] = source_state
+    FakeYouTubeMusicAdapter.shared_state["target"] = target_state
 
     source_account_id = app_state.db.upsert_account(
         AccountUpsert(
@@ -379,8 +379,8 @@ def test_playlist_sync_stores_mappings_by_item_kind(app_state: AppState) -> None
             },
         },
     }
-    FakeSpotifyAdapter.STATE["source"] = source_state
-    FakeYouTubeMusicAdapter.STATE["target"] = target_state
+    FakeSpotifyAdapter.shared_state["source"] = source_state
+    FakeYouTubeMusicAdapter.shared_state["target"] = target_state
 
     source_account_id = app_state.db.upsert_account(
         AccountUpsert(
@@ -491,8 +491,8 @@ def test_rate_limited_job_pauses_then_auto_resumes(app_state: AppState) -> None:
         },
         "save_tracks_effects": [RateLimitError("Slow down", retry_after=0)],
     }
-    FakeSpotifyAdapter.STATE["source"] = source_state
-    FakeYouTubeMusicAdapter.STATE["target"] = target_state
+    FakeSpotifyAdapter.shared_state["source"] = source_state
+    FakeYouTubeMusicAdapter.shared_state["target"] = target_state
 
     source_account_id = app_state.db.upsert_account(
         AccountUpsert(

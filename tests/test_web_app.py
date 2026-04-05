@@ -5,6 +5,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 import requests
+from anyio.lowlevel import checkpoint
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
@@ -26,7 +27,7 @@ def _redirect_query_value(location: str, key: str) -> str | None:
 
 def test_web_app_renders_pages_and_creates_job(app_state: AppState) -> None:
     """Test that the web app renders core pages and creates jobs."""
-    FakeSpotifyAdapter.STATE["source"] = {
+    FakeSpotifyAdapter.shared_state["source"] = {
         "identity": {
             "remote_account_id": "spotify-src",
             "display_name": "Source Spotify",
@@ -36,7 +37,7 @@ def test_web_app_renders_pages_and_creates_job(app_state: AppState) -> None:
         "search": {},
         "catalog": {},
     }
-    FakeYouTubeMusicAdapter.STATE["target"] = {
+    FakeYouTubeMusicAdapter.shared_state["target"] = {
         "identity": {
             "remote_account_id": "yt-target",
             "display_name": "Target YT Music",
@@ -109,7 +110,7 @@ def test_web_app_renders_pages_and_creates_job(app_state: AppState) -> None:
 
 def test_web_app_can_save_and_validate_ytmusic_connection(app_state: AppState) -> None:
     """Test that YouTube Music headers can be saved and validated."""
-    FakeYouTubeMusicAdapter.STATE["connect"] = {
+    FakeYouTubeMusicAdapter.shared_state["connect"] = {
         "identity": {
             "remote_account_id": "yt-connected",
             "display_name": "Connected YT Music",
@@ -173,7 +174,7 @@ def test_web_app_can_start_and_complete_ytmusic_oauth_connection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Test that the YouTube Music OAuth flow can complete successfully."""
-    FakeYouTubeMusicAdapter.STATE["yt-oauth"] = {
+    FakeYouTubeMusicAdapter.shared_state["yt-oauth"] = {
         "identity": {
             "remote_account_id": "yt-oauth-account",
             "display_name": "OAuth YT Music",
@@ -467,11 +468,12 @@ async def test_event_stream_endpoint_yields_existing_events(
             self.calls = 0
 
         async def is_disconnected(self) -> bool:
+            await checkpoint()
             self.calls += 1
             return self.calls > 1
 
     async def immediate_sleep(_seconds: float) -> None:
-        return None
+        await checkpoint()
 
     monkeypatch.setattr("spo.app.asyncio.sleep", immediate_sleep)
 
