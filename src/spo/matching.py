@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Mapping
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from typing import Any
+from typing import Any, cast
 
 from spo.models import CanonicalWork, CollectionKind, Service
 from spo.utils import stable_hash
@@ -65,24 +66,31 @@ def _parse_duration_ms(value: object) -> int | None:
     return duration_ms
 
 
+def _coerce_artist_name(value: object) -> str | None:
+    """Return a normalized artist name string if one can be derived from a raw item."""
+    candidate = cast("Mapping[str, object]", value).get("name") if isinstance(value, Mapping) else value
+
+    if not candidate:
+        return None
+    return str(candidate)
+
+
 def _extract_artists(raw: dict[str, Any]) -> list[str]:
-    if "artists" in raw and isinstance(raw["artists"], list):
-        artists = []
-        for item in raw["artists"]:
-            if isinstance(item, dict):
-                name = item.get("name")
-                if name:
-                    artists.append(str(name))
-            elif item:
-                artists.append(str(item))
+    artists_payload = raw.get("artists")
+    if isinstance(artists_payload, list):
+        artists = [
+            artist_name
+            for item in artists_payload
+            if (artist_name := _coerce_artist_name(item)) is not None
+        ]
         if artists:
             return artists
-    if raw.get("artist"):
-        return [str(raw["artist"])]
-    if raw.get("author"):
-        return [str(raw["author"])]
-    if raw.get("owner"):
-        return [str(raw["owner"])]
+
+    for key in ("artist", "author", "owner"):
+        value = raw.get(key)
+        if value:
+            return [str(value)]
+
     return []
 
 
