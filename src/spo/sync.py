@@ -23,6 +23,7 @@ from spo.matching import (
     playlist_name_match_score,
 )
 from spo.models import AccountIdentity, CanonicalWork, CollectionKind, JobStatus, Service, TaskState
+from spo.persistence import TaskUpsert
 from spo.services import SpotifyAdapter, YouTubeMusicAdapter
 from spo.utils import json_dumps, stable_hash, utcnow
 
@@ -617,14 +618,16 @@ class SyncEngine:
 
         target_id = remote_item_id(match.candidate)
         task_id, _ = self.db.create_or_update_task(
-            job_id=context.job_id,
-            dedupe_key=dedupe_key,
-            action=context.action,
-            collection_kind=context.kind.value,
-            source_entity_id=int(entity["id"]),
-            target_entity_id=target_id,
-            payload={"match_method": match.method, "score": match.score},
-            state=TaskState.PENDING.value,
+            TaskUpsert(
+                job_id=context.job_id,
+                dedupe_key=dedupe_key,
+                action=context.action,
+                collection_kind=context.kind.value,
+                source_entity_id=int(entity["id"]),
+                target_entity_id=target_id,
+                payload={"match_method": match.method, "score": match.score},
+                state=TaskState.PENDING.value,
+            ),
         )
         batch_state.pending_items.append((task_id, canonical.fingerprint, target_id))
         return False
@@ -636,13 +639,15 @@ class SyncEngine:
         dedupe_key: str,
     ) -> None:
         task_id, _ = self.db.create_or_update_task(
-            job_id=context.job_id,
-            dedupe_key=dedupe_key,
-            action=context.action,
-            collection_kind=context.kind.value,
-            source_entity_id=int(entity["id"]),
-            payload={"reason": "already_present"},
-            state=TaskState.SKIPPED.value,
+            TaskUpsert(
+                job_id=context.job_id,
+                dedupe_key=dedupe_key,
+                action=context.action,
+                collection_kind=context.kind.value,
+                source_entity_id=int(entity["id"]),
+                payload={"reason": "already_present"},
+                state=TaskState.SKIPPED.value,
+            ),
         )
         self.db.increment_job_counter(context.job_id, "progress_skipped_count")
         self.db.update_task(task_id, last_error=None)
@@ -655,14 +660,16 @@ class SyncEngine:
         canonical: CanonicalWork,
     ) -> None:
         self.db.create_or_update_task(
-            job_id=context.job_id,
-            dedupe_key=dedupe_key,
-            action=context.action,
-            collection_kind=context.kind.value,
-            source_entity_id=int(entity["id"]),
-            payload={"reason": "unresolved"},
-            state=TaskState.SKIPPED.value,
-            last_error="No acceptable target candidate found.",
+            TaskUpsert(
+                job_id=context.job_id,
+                dedupe_key=dedupe_key,
+                action=context.action,
+                collection_kind=context.kind.value,
+                source_entity_id=int(entity["id"]),
+                payload={"reason": "unresolved"},
+                state=TaskState.SKIPPED.value,
+                last_error="No acceptable target candidate found.",
+            ),
         )
         self.db.increment_job_counter(context.job_id, "progress_skipped_count")
         self.db.append_event(
@@ -775,14 +782,16 @@ class SyncEngine:
         playlist_id = target_playlist["id"]
         playlist_task_key = f"{context.job_id}:playlist:{source_playlist['id']}"
         playlist_task, _ = self.db.create_or_update_task(
-            job_id=context.job_id,
-            dedupe_key=playlist_task_key,
-            action="ensure_playlist",
-            collection_kind=CollectionKind.PLAYLIST.value,
-            source_entity_id=int(source_playlist["id"]),
-            target_entity_id=playlist_id,
-            payload={"playlist_name": playlist_work.title},
-            state=TaskState.COMPLETED.value,
+            TaskUpsert(
+                job_id=context.job_id,
+                dedupe_key=playlist_task_key,
+                action="ensure_playlist",
+                collection_kind=CollectionKind.PLAYLIST.value,
+                source_entity_id=int(source_playlist["id"]),
+                target_entity_id=playlist_id,
+                payload={"playlist_name": playlist_work.title},
+                state=TaskState.COMPLETED.value,
+            ),
         )
         self.db.update_task(playlist_task, last_error=None)
         self.db.upsert_mapping(
@@ -827,14 +836,16 @@ class SyncEngine:
 
         matched_id = remote_item_id(match.candidate)
         task_id, _ = self.db.create_or_update_task(
-            job_id=context.job_id,
-            dedupe_key=task_key,
-            action="add_playlist_item",
-            collection_kind=child_kind.value,
-            source_entity_id=int(item["id"]),
-            target_entity_id=batch_state.playlist_id,
-            payload={"matched_id": matched_id, "score": match.score},
-            state=TaskState.PENDING.value,
+            TaskUpsert(
+                job_id=context.job_id,
+                dedupe_key=task_key,
+                action="add_playlist_item",
+                collection_kind=child_kind.value,
+                source_entity_id=int(item["id"]),
+                target_entity_id=batch_state.playlist_id,
+                payload={"matched_id": matched_id, "score": match.score},
+                state=TaskState.PENDING.value,
+            ),
         )
         batch_state.pending_items.append((task_id, work.fingerprint, matched_id, child_kind))
         batch_state.target_items_counter[work.fingerprint] += 1
@@ -849,14 +860,16 @@ class SyncEngine:
         task_key: str,
     ) -> None:
         self.db.create_or_update_task(
-            job_id=context.job_id,
-            dedupe_key=task_key,
-            action="add_playlist_item",
-            collection_kind=child_kind.value,
-            source_entity_id=int(item["id"]),
-            target_entity_id=playlist_id,
-            payload={"reason": "already_present"},
-            state=TaskState.SKIPPED.value,
+            TaskUpsert(
+                job_id=context.job_id,
+                dedupe_key=task_key,
+                action="add_playlist_item",
+                collection_kind=child_kind.value,
+                source_entity_id=int(item["id"]),
+                target_entity_id=playlist_id,
+                payload={"reason": "already_present"},
+                state=TaskState.SKIPPED.value,
+            ),
         )
         self.db.increment_job_counter(context.job_id, "progress_skipped_count")
 
@@ -870,15 +883,17 @@ class SyncEngine:
     ) -> None:
         child_kind = CollectionKind(item["collection_kind"])
         self.db.create_or_update_task(
-            job_id=context.job_id,
-            dedupe_key=task_key,
-            action="add_playlist_item",
-            collection_kind=child_kind.value,
-            source_entity_id=int(item["id"]),
-            target_entity_id=playlist_id,
-            payload={"reason": "unresolved"},
-            state=TaskState.SKIPPED.value,
-            last_error="No acceptable target candidate found.",
+            TaskUpsert(
+                job_id=context.job_id,
+                dedupe_key=task_key,
+                action="add_playlist_item",
+                collection_kind=child_kind.value,
+                source_entity_id=int(item["id"]),
+                target_entity_id=playlist_id,
+                payload={"reason": "unresolved"},
+                state=TaskState.SKIPPED.value,
+                last_error="No acceptable target candidate found.",
+            ),
         )
         self.db.increment_job_counter(context.job_id, "progress_skipped_count")
         self.db.append_event(

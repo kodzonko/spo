@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import closing
+from dataclasses import dataclass
 from threading import RLock
 from typing import TYPE_CHECKING, Any, TypedDict, Unpack
 
@@ -67,6 +68,22 @@ class TaskUpdateFields(TypedDict, total=False):
     state: str
     target_entity_id: str | None
     updated_at: str
+
+
+@dataclass(slots=True)
+class TaskUpsert:
+    """Input payload for inserting or updating one task row."""
+
+    job_id: int
+    dedupe_key: str
+    action: str
+    collection_kind: str
+    payload: dict[str, Any]
+    source_entity_id: int | None = None
+    target_entity_id: str | None = None
+    state: str = TaskState.PENDING.value
+    last_error: str | None = None
+    cooldown_until: str | None = None
 
 
 def _validate_update_fields(fields: dict[str, object], allowed_fields: frozenset[str], *, entity: str) -> None:
@@ -683,23 +700,11 @@ class Database:
             (source_service, target_service, source_fingerprint, target_kind),
         )
 
-    def create_or_update_task(
-        self,
-        *,
-        job_id: int,
-        dedupe_key: str,
-        action: str,
-        collection_kind: str,
-        payload: dict[str, Any],
-        source_entity_id: int | None = None,
-        target_entity_id: str | None = None,
-        state: str = TaskState.PENDING.value,
-        last_error: str | None = None,
-        cooldown_until: str | None = None,
-    ) -> tuple[int, bool]:
+    def create_or_update_task(self, task: TaskUpsert) -> tuple[int, bool]:
         """Insert or update a synchronization task and return its ID plus creation flag."""
         now = utcnow()
-        existing = self._execute_one("SELECT id FROM tasks WHERE dedupe_key = ?", (dedupe_key,))
+        payload_json = json_dumps(task.payload)
+        existing = self._execute_one("SELECT id FROM tasks WHERE dedupe_key = ?", (task.dedupe_key,))
         if existing:
             self._write(
                 """
@@ -709,11 +714,11 @@ class Database:
                 WHERE id = ?
                 """,
                 (
-                    target_entity_id,
-                    json_dumps(payload),
-                    state,
-                    last_error,
-                    cooldown_until,
+                    task.target_entity_id,
+                    payload_json,
+                    task.state,
+                    task.last_error,
+                    task.cooldown_until,
                     now,
                     int(existing["id"]),
                 ),
@@ -726,16 +731,16 @@ class Database:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                job_id,
-                dedupe_key,
-                action,
-                collection_kind,
-                source_entity_id,
-                target_entity_id,
-                json_dumps(payload),
-                state,
-                cooldown_until,
-                last_error,
+                task.job_id,
+                task.dedupe_key,
+                task.action,
+                task.collection_kind,
+                task.source_entity_id,
+                task.target_entity_id,
+                payload_json,
+                task.state,
+                task.cooldown_until,
+                task.last_error,
                 now,
                 now,
             ),

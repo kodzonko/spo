@@ -62,3 +62,10 @@ Option A was raising validation and authentication exceptions inline inside broa
 Option B was moving those deliberate validation raises into small helper functions so the surrounding `try` blocks stay focused on fallible library and parsing calls.
 
 This repository now uses option B because it satisfies Ruff's `TRY301` rule without changing behavior, and it makes the intentionally raised validation failures easier to distinguish from unexpected exceptions coming from third-party code.
+
+## Argument-Heavy Persistence Writes
+
+Option A was keeping persistence write methods as long keyword-only signatures even when they represented one conceptual record mutation.
+Option B was bundling those fields into small dataclass inputs so call sites still name every field, while the storage methods accept one explicit parameter object.
+
+This repository now uses option B because it satisfies Ruff's argument-count rule without hiding what each write contains, and it makes task creation or update payloads easier to reuse in tests and sync orchestration.
