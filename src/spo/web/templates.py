@@ -285,7 +285,7 @@ TEMPLATES: dict[str, str] = {
 <section class="hero">
   <div>
     <h1>Connections</h1>
-    <p class="muted">Store local credentials for each streaming service on this machine. Spotify uses an OAuth redirect, while YouTube Music accepts pasted headers or an OAuth JSON blob.</p>
+    <p class="muted">Store local credentials for each streaming service on this machine. Spotify uses an OAuth redirect, and YouTube Music can use a guided Google device flow or a manual browser-header import.</p>
   </div>
 </section>
 <section class="grid cols-2">
@@ -309,17 +309,30 @@ TEMPLATES: dict[str, str] = {
   </article>
   <article class="panel">
     <h2>YouTube Music</h2>
-    <form method="post" action="/api/connections/ytmusic">
-      <label>Headers JSON
-        <textarea name="headers_json" placeholder='{"cookie": "...", "x-goog-authuser": "0"}'></textarea>
+    <form method="post" action="/api/connections/ytmusic/oauth/start">
+      <label>Google Client ID
+        <input name="client_id" placeholder="Google OAuth client ID" required>
       </label>
-      <label>OAuth JSON
-        <textarea name="oauth_json" placeholder='{"access_token": "...", "refresh_token": "..."}'></textarea>
+      <label>Google Client Secret
+        <input name="client_secret" type="password" placeholder="Google OAuth client secret" required>
       </label>
       <div class="button-row">
-        <button type="submit">Save YouTube Music credentials</button>
+        <button type="submit">Connect YouTube Music</button>
       </div>
     </form>
+    <p class="small muted">Recommended. `spo` starts the Google device flow, opens the sign-in page, and saves the resulting token locally. You still need your own YouTube Data API OAuth client.</p>
+    <details>
+      <summary>Advanced: paste browser headers instead</summary>
+      <form method="post" action="/api/connections/ytmusic" style="margin-top: 0.8rem;">
+        <label>Headers JSON
+          <textarea name="headers_json" placeholder='{"cookie": "...", "x-goog-authuser": "0"}'></textarea>
+        </label>
+        <div class="button-row">
+          <button class="secondary" type="submit">Save browser headers</button>
+        </div>
+      </form>
+      <p class="small muted">Use this only if you already know how to export `ytmusicapi` browser headers from an authenticated `music.youtube.com` session.</p>
+    </details>
   </article>
 </section>
 <section class="panel" style="margin-top: 1rem;">
@@ -349,6 +362,78 @@ TEMPLATES: dict[str, str] = {
     <p class="muted">No accounts stored yet.</p>
   {% endif %}
 </section>
+""",
+    "ytmusic_oauth.html": """
+<section class="hero">
+  <div>
+    <h1>Connect YouTube Music</h1>
+    <p class="muted">Keep this page open while you finish Google sign-in. `spo` will poll for completion and save the token locally without requiring you to paste JSON back into the app.</p>
+  </div>
+  <div class="button-row">
+    <a id="ytmusic-open-auth" class="button-link" href="{{ verification_url }}" target="_blank" rel="noopener">Continue with Google</a>
+    <a class="button-link secondary" href="/connections">Back to connections</a>
+  </div>
+</section>
+<section class="grid cols-2">
+  <article class="panel">
+    <h2>Verification Code</h2>
+    <p>Enter this code if Google asks for it:</p>
+    <p><code id="ytmusic-user-code">{{ user_code }}</code></p>
+    <p class="small muted">If a pop-up was blocked, use the button above to open the Google verification page manually.</p>
+  </article>
+  <article class="panel">
+    <h2>Status</h2>
+    <p id="ytmusic-oauth-status">Waiting for Google approval.</p>
+    <p class="small muted">The page checks every {{ interval_seconds }} seconds and redirects back to Connections when the account is ready.</p>
+  </article>
+</section>
+<script>
+  (function () {
+    const statusEl = document.getElementById("ytmusic-oauth-status");
+    const openAuthLink = document.getElementById("ytmusic-open-auth");
+    const statusUrl = "/api/connections/ytmusic/oauth/{{ flow_id }}/status";
+    let intervalSeconds = {{ interval_seconds }};
+
+    function setStatus(message) {
+      statusEl.textContent = message;
+    }
+
+    async function poll() {
+      try {
+        const response = await fetch(statusUrl, { cache: "no-store" });
+        const payload = await response.json();
+        if (payload.status === "pending") {
+          intervalSeconds = payload.interval_seconds || intervalSeconds;
+          window.setTimeout(poll, intervalSeconds * 1000);
+          return;
+        }
+        if (payload.redirect_url) {
+          window.location.href = payload.redirect_url;
+          return;
+        }
+        if (payload.message) {
+          setStatus(payload.message);
+          return;
+        }
+        setStatus("YouTube Music authorization stopped unexpectedly.");
+      } catch (_error) {
+        setStatus("Could not reach the local authorization status endpoint. Retrying shortly.");
+        window.setTimeout(poll, intervalSeconds * 1000);
+      }
+    }
+
+    try {
+      const popup = window.open(openAuthLink.href, "_blank", "noopener");
+      if (!popup) {
+        setStatus("Pop-up blocked. Use Continue with Google to open the verification page.");
+      }
+    } catch (_error) {
+      setStatus("Use Continue with Google to open the verification page.");
+    }
+
+    window.setTimeout(poll, intervalSeconds * 1000);
+  })();
+</script>
 """,
     "sync_new.html": """
 <section class="hero">

@@ -4,7 +4,9 @@ import asyncio
 import json
 import logging
 import secrets
+import time
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import quote_plus
 
@@ -17,6 +19,8 @@ from fastapi.responses import (
 )
 from jinja2 import DictLoader, Environment, select_autoescape
 from starlette.datastructures import UploadFile
+from ytmusicapi.auth.oauth.credentials import OAuthCredentials
+from ytmusicapi.auth.oauth.exceptions import BadOAuthClient, UnauthorizedOAuthClient
 
 from spo.config import Settings, load_settings
 from spo.exceptions import AuthenticationError, ValidationError
@@ -40,6 +44,22 @@ class AppState:
     registry: ServiceRegistry
     engine: SyncEngine
     runner: JobRunner
+    pending_ytmusic_oauth: dict[str, "PendingYouTubeMusicOAuth"]
+
+
+@dataclass(slots=True)
+class PendingYouTubeMusicOAuth:
+    account_id: int
+    client_id: str
+    client_secret: str
+    device_code: str
+    user_code: str
+    verification_url: str
+    interval_seconds: int
+    expires_at: datetime
+
+    def is_expired(self) -> bool:
+        return datetime.now(UTC) >= self.expires_at
 
 
 def _configure_logging(settings: Settings) -> None:
@@ -74,12 +94,11 @@ def create_state(settings: Settings | None = None) -> AppState:
         registry=registry,
         engine=engine,
         runner=runner,
+        pending_ytmusic_oauth={},
     )
 
 
-def render_template(
-    name: str, *, title: str, request: Request, **context: Any
-) -> HTMLResponse:
+def render_template(name: str, *, title: str, request: Request, **context: Any) -> HTMLResponse:
     body = template_env.get_template(name).render(**context)
     html = template_env.get_template("base.html").render(
         title=title,
@@ -107,9 +126,7 @@ def _service_description(kind: CollectionKind) -> dict[str, str]:
     }
 
 
-def _latest_account_for_service(
-    db: Database, service: Service
-) -> dict[str, Any] | None:
+def _latest_account_for_service(db: Database, service: Service) -> dict[str, Any] | None:
     accounts = db.find_account_by_service(service.value)
     return accounts[0] if accounts else None
 
@@ -121,6 +138,59 @@ def _form_int(value: UploadFile | str, field_name: str) -> int:
         return int(value)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid {field_name}.") from exc
+
+
+def _ytmusic_account_defaults(existing: dict[str, Any] | None) -> dict[str, str | None]:
+    return {
+        "remote_account_id": existing.get("remote_account_id") if existing else None,
+        "display_name": existing.get("display_name") if existing else "YouTube Music account",
+    }
+
+
+def _start_ytmusic_oauth_flow(
+    account_id: int,
+    *,
+    client_id: str,
+    client_secret: str,
+) -> PendingYouTubeMusicOAuth:
+    try:
+        code = OAuthCredentials(client_id, client_secret).get_code()
+    except (BadOAuthClient, UnauthorizedOAuthClient) as exc:
+        raise AuthenticationError(f"YouTube Music OAuth setup failed: {exc}") from exc
+    except Exception as exc:  # pragma: no cover - network and library internals
+        raise AuthenticationError(f"Could not start YouTube Music OAuth: {exc}") from exc
+
+    device_code = str(code.get("device_code") or "")
+    user_code = str(code.get("user_code") or "")
+    verification_url = str(code.get("verification_url") or "")
+    if not device_code or not user_code or not verification_url:
+        raise AuthenticationError("YouTube Music OAuth did not return a usable device code.")
+
+    interval_seconds = max(int(code.get("interval") or 5), 1)
+    expires_in = max(int(code.get("expires_in") or 1800), 1)
+    return PendingYouTubeMusicOAuth(
+        account_id=account_id,
+        client_id=client_id,
+        client_secret=client_secret,
+        device_code=device_code,
+        user_code=user_code,
+        verification_url=verification_url,
+        interval_seconds=interval_seconds,
+        expires_at=datetime.now(UTC) + timedelta(seconds=expires_in),
+    )
+
+
+def _get_pending_ytmusic_oauth(
+    app_state: AppState,
+    flow_id: str,
+) -> PendingYouTubeMusicOAuth | None:
+    flow = app_state.pending_ytmusic_oauth.get(flow_id)
+    if flow is None:
+        return None
+    if flow.is_expired():
+        app_state.pending_ytmusic_oauth.pop(flow_id, None)
+        return None
+    return flow
 
 
 def create_app(state: AppState | None = None) -> FastAPI:
@@ -167,9 +237,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             account_id=int(existing["id"]) if existing else None,
             service=Service.SPOTIFY.value,
             remote_account_id=existing.get("remote_account_id") if existing else None,
-            display_name=existing.get("display_name")
-            if existing
-            else "Spotify account",
+            display_name=existing.get("display_name") if existing else "Spotify account",
             auth_status="pending",
             oauth_state=oauth_state,
         )
@@ -257,7 +325,6 @@ def create_app(state: AppState | None = None) -> FastAPI:
     @app.post("/api/connections/ytmusic")
     async def save_ytmusic_connection(
         headers_json: str | None = Form(default=None),
-        oauth_json: str | None = Form(default=None),
     ) -> RedirectResponse:
         try:
             payload: dict[str, Any]
@@ -268,26 +335,15 @@ def create_app(state: AppState | None = None) -> FastAPI:
                     "data": json.loads(headers_json),
                 }
                 credential_type = CredentialType.YTMUSIC_HEADERS.value
-            elif oauth_json and oauth_json.strip():
-                payload = {
-                    "credential_type": CredentialType.YTMUSIC_OAUTH.value,
-                    "data": json.loads(oauth_json),
-                }
-                credential_type = CredentialType.YTMUSIC_OAUTH.value
             else:
-                raise ValidationError(
-                    "Paste headers JSON or OAuth JSON for YouTube Music."
-                )
+                raise ValidationError("Paste browser headers JSON, or use Connect YouTube Music above.")
             existing = _latest_account_for_service(app_state.db, Service.YTMUSIC)
+            account_defaults = _ytmusic_account_defaults(existing)
             account_id = app_state.db.upsert_account(
                 account_id=int(existing["id"]) if existing else None,
                 service=Service.YTMUSIC.value,
-                remote_account_id=existing.get("remote_account_id")
-                if existing
-                else None,
-                display_name=existing.get("display_name")
-                if existing
-                else "YouTube Music account",
+                remote_account_id=account_defaults["remote_account_id"],
+                display_name=account_defaults["display_name"],
                 auth_status="pending",
                 oauth_state=None,
             )
@@ -322,6 +378,185 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 status_code=303,
             )
 
+    @app.post("/api/connections/ytmusic/oauth/start")
+    async def start_ytmusic_connection(
+        client_id: str = Form(...),
+        client_secret: str = Form(...),
+    ) -> RedirectResponse:
+        try:
+            resolved_client_id = client_id.strip()
+            resolved_client_secret = client_secret.strip()
+            if not resolved_client_id or not resolved_client_secret:
+                raise ValidationError("Provide a Google OAuth client ID and secret for YouTube Music.")
+
+            existing = _latest_account_for_service(app_state.db, Service.YTMUSIC)
+            account_defaults = _ytmusic_account_defaults(existing)
+            account_id = app_state.db.upsert_account(
+                account_id=int(existing["id"]) if existing else None,
+                service=Service.YTMUSIC.value,
+                remote_account_id=account_defaults["remote_account_id"],
+                display_name=account_defaults["display_name"],
+                auth_status="pending",
+                oauth_state=None,
+            )
+            flow = _start_ytmusic_oauth_flow(
+                account_id,
+                client_id=resolved_client_id,
+                client_secret=resolved_client_secret,
+            )
+            flow_id = secrets.token_urlsafe(24)
+            app_state.pending_ytmusic_oauth[flow_id] = flow
+            return RedirectResponse(f"/connections/ytmusic/oauth/{flow_id}", status_code=303)
+        except (ValidationError, AuthenticationError) as exc:
+            return RedirectResponse(
+                f"/connections?error={quote_plus(str(exc))}",
+                status_code=303,
+            )
+
+    @app.get("/connections/ytmusic/oauth/{flow_id}", response_class=HTMLResponse)
+    def ytmusic_oauth_page(flow_id: str, request: Request) -> HTMLResponse | RedirectResponse:
+        flow = _get_pending_ytmusic_oauth(app_state, flow_id)
+        if flow is None:
+            return RedirectResponse(
+                "/connections?error=YouTube Music authorization expired. Start the connection again.",
+                status_code=303,
+            )
+
+        return render_template(
+            "ytmusic_oauth.html",
+            title="Connect YouTube Music",
+            request=request,
+            flow_id=flow_id,
+            user_code=flow.user_code,
+            verification_url=flow.verification_url,
+            interval_seconds=flow.interval_seconds,
+        )
+
+    @app.get("/api/connections/ytmusic/oauth/{flow_id}/status")
+    async def ytmusic_oauth_status(flow_id: str) -> JSONResponse:
+        flow = _get_pending_ytmusic_oauth(app_state, flow_id)
+        if flow is None:
+            return JSONResponse(
+                {
+                    "status": "expired",
+                    "message": "YouTube Music authorization expired. Start the connection again.",
+                    "redirect_url": "/connections?error=YouTube Music authorization expired. Start the connection again.",
+                },
+                status_code=410,
+            )
+
+        try:
+            token_response = OAuthCredentials(flow.client_id, flow.client_secret).token_from_code(flow.device_code)
+        except (BadOAuthClient, UnauthorizedOAuthClient) as exc:
+            app_state.pending_ytmusic_oauth.pop(flow_id, None)
+            return JSONResponse(
+                {
+                    "status": "error",
+                    "message": f"YouTube Music OAuth setup failed: {exc}",
+                    "redirect_url": f"/connections?error={quote_plus(f'YouTube Music OAuth setup failed: {exc}')}",
+                },
+                status_code=400,
+            )
+        except Exception as exc:  # pragma: no cover - network and library internals
+            return JSONResponse(
+                {
+                    "status": "error",
+                    "message": f"Could not finish YouTube Music OAuth: {exc}",
+                },
+                status_code=502,
+            )
+
+        error_code = token_response.get("error")
+        if error_code == "authorization_pending":
+            return JSONResponse(
+                {
+                    "status": "pending",
+                    "interval_seconds": flow.interval_seconds,
+                },
+            )
+        if error_code == "slow_down":
+            flow.interval_seconds += 5
+            return JSONResponse(
+                {
+                    "status": "pending",
+                    "interval_seconds": flow.interval_seconds,
+                },
+            )
+        if error_code in {"access_denied", "expired_token"}:
+            app_state.pending_ytmusic_oauth.pop(flow_id, None)
+            message = "YouTube Music authorization was denied or expired. Start the connection again."
+            return JSONResponse(
+                {
+                    "status": "error",
+                    "message": message,
+                    "redirect_url": f"/connections?error={quote_plus(message)}",
+                },
+                status_code=400,
+            )
+        if not token_response.get("access_token") or not token_response.get("refresh_token"):
+            return JSONResponse(
+                {
+                    "status": "error",
+                    "message": "YouTube Music OAuth did not return usable tokens.",
+                },
+                status_code=502,
+            )
+
+        expires_in = int(token_response.get("expires_in") or 0)
+        persisted_token = {
+            **token_response,
+            "expires_at": int(time.time()) + expires_in,
+        }
+        payload = {
+            "credential_type": CredentialType.YTMUSIC_OAUTH.value,
+            "data": persisted_token,
+            "oauth_client": {
+                "client_id": flow.client_id,
+                "client_secret": flow.client_secret,
+            },
+        }
+        try:
+            adapter = app_state.registry.create(
+                service=Service.YTMUSIC,
+                account_id=flow.account_id,
+                credential_payload=payload,
+            )
+            identity = adapter.authenticate()
+            app_state.db.save_credentials(
+                flow.account_id,
+                CredentialType.YTMUSIC_OAUTH.value,
+                adapter.persisted_payload,
+                last_validated_at=utcnow(),
+            )
+            app_state.db.upsert_account(
+                account_id=flow.account_id,
+                service=Service.YTMUSIC.value,
+                remote_account_id=identity.remote_account_id,
+                display_name=identity.display_name,
+                auth_status="connected",
+                oauth_state=None,
+            )
+        except AuthenticationError as exc:
+            app_state.pending_ytmusic_oauth.pop(flow_id, None)
+            return JSONResponse(
+                {
+                    "status": "error",
+                    "message": str(exc),
+                    "redirect_url": f"/connections?error={quote_plus(str(exc))}",
+                },
+                status_code=400,
+            )
+
+        app_state.pending_ytmusic_oauth.pop(flow_id, None)
+        message = f"Connected YouTube Music account {identity.display_name}."
+        return JSONResponse(
+            {
+                "status": "connected",
+                "message": message,
+                "redirect_url": f"/connections?message={quote_plus(message)}",
+            },
+        )
+
     @app.post("/api/connections/{service}/test")
     async def test_connection(service: str) -> JSONResponse:
         try:
@@ -330,9 +565,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Unknown service") from exc
         account = _latest_account_for_service(app_state.db, enum_service)
         if not account:
-            raise HTTPException(
-                status_code=404, detail="No account stored for this service."
-            )
+            raise HTTPException(status_code=404, detail="No account stored for this service.")
         credentials = app_state.db.get_credentials(int(account["id"]))
         if not credentials:
             raise HTTPException(status_code=400, detail="Credentials are missing.")
@@ -347,16 +580,12 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 "service": service,
                 "display_name": identity.display_name,
                 "remote_account_id": identity.remote_account_id,
-            }
+            },
         )
 
     @app.get("/sync/new", response_class=HTMLResponse)
     def new_sync(request: Request) -> HTMLResponse:
-        accounts = [
-            row
-            for row in app_state.db.list_accounts()
-            if row["auth_status"] == "connected"
-        ]
+        accounts = [row for row in app_state.db.list_accounts() if row["auth_status"] == "connected"]
         collections = [_service_description(kind) for kind in CollectionKind]
         return render_template(
             "sync_new.html",
@@ -379,9 +608,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             )
         if not collection_kinds:
             collection_kinds = [kind.value for kind in CollectionKind]
-        job_id = app_state.db.create_job(
-            source_account_id, target_account_id, collection_kinds
-        )
+        job_id = app_state.db.create_job(source_account_id, target_account_id, collection_kinds)
         try:
             app_state.runner.start(job_id)
         except RuntimeError as exc:

@@ -41,5 +41,10 @@ def app_state(settings: Settings) -> AppState:
     engine = SyncEngine(db, settings, registry)
     runner = JobRunner(engine, db)
     return AppState(
-        settings=settings, db=db, registry=registry, engine=engine, runner=runner
+        settings=settings,
+        db=db,
+        registry=registry,
+        engine=engine,
+        runner=runner,
+        pending_ytmusic_oauth={},
     )

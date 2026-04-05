@@ -6,6 +6,7 @@ from typing import Any
 
 import requests
 from ytmusicapi import YTMusic
+from ytmusicapi.auth.oauth.credentials import OAuthCredentials
 from ytmusicapi.models.content.enums import LikeStatus
 
 from spo.config import Settings
@@ -37,7 +38,7 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
                 CollectionKind.FOLLOWED_ARTIST,
                 CollectionKind.SAVED_PODCAST,
                 CollectionKind.SAVED_EPISODE,
-            }
+            },
         ),
         writable=frozenset(
             {
@@ -45,13 +46,11 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
                 CollectionKind.SAVED_TRACK,
                 CollectionKind.LIKED_TRACK,
                 CollectionKind.FOLLOWED_ARTIST,
-            }
+            },
         ),
     )
 
-    def __init__(
-        self, *, account_id: int, credential_payload: dict[str, Any], settings: Settings
-    ) -> None:
+    def __init__(self, *, account_id: int, credential_payload: dict[str, Any], settings: Settings) -> None:
         super().__init__(
             account_id=account_id,
             credential_payload=credential_payload,
@@ -69,6 +68,19 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
         auth_dir.mkdir(parents=True, exist_ok=True)
         return auth_dir / f"ytmusic-account-{self.account_id}.json"
 
+    @property
+    def persisted_payload(self) -> dict[str, Any]:
+        if self.credential_payload.get("credential_type") != "ytmusic_oauth":
+            return self.credential_payload
+
+        auth_file = self._auth_file_path()
+        if not auth_file.exists():
+            return self.credential_payload
+
+        payload = dict(self.credential_payload)
+        payload["data"] = json.loads(auth_file.read_text(encoding="utf-8"))
+        return payload
+
     def _ensure_client(self) -> YTMusic:
         if self._client is not None:
             return self._client
@@ -78,25 +90,32 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
             raise AuthenticationError("YouTube Music credentials are missing.")
         try:
             if credential_type == "ytmusic_headers":
-                headers = (
-                    json.loads(data)
-                    if isinstance(data, str)
-                    else json.loads(json.dumps(data))
-                )
+                headers = json.loads(data) if isinstance(data, str) else json.loads(json.dumps(data))
                 self._client = YTMusic(headers)
             elif credential_type == "ytmusic_oauth":
+                oauth_client = self.credential_payload.get("oauth_client")
+                if not isinstance(oauth_client, dict):
+                    raise AuthenticationError("YouTube Music OAuth client credentials are missing.")
+                client_id = str(oauth_client.get("client_id") or "").strip()
+                client_secret = str(oauth_client.get("client_secret") or "").strip()
+                if not client_id or not client_secret:
+                    raise AuthenticationError("YouTube Music OAuth client credentials are incomplete.")
                 auth_file = self._auth_file_path()
                 auth_file.write_text(
                     json.dumps(data if isinstance(data, dict) else json.loads(data)),
                     encoding="utf-8",
                 )
-                self._client = YTMusic(str(auth_file))
+                self._client = YTMusic(
+                    str(auth_file),
+                    oauth_credentials=OAuthCredentials(
+                        client_id=client_id,
+                        client_secret=client_secret,
+                    ),
+                )
             else:
                 raise AuthenticationError("Unsupported YouTube Music credential type.")
         except Exception as exc:  # pragma: no cover - library internals
-            raise AuthenticationError(
-                f"YouTube Music authentication failed: {exc}"
-            ) from exc
+            raise AuthenticationError(f"YouTube Music authentication failed: {exc}") from exc
         return self._client
 
     def _call(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
@@ -109,15 +128,11 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
                 if retry_after_value is not None:
                     try:
                         retry_after = float(retry_after_value)
-                    except (TypeError, ValueError):
+                    except TypeError, ValueError:
                         retry_after = None
-                raise RateLimitError(
-                    "YouTube Music rate limit exceeded.", retry_after
-                ) from exc
+                raise RateLimitError("YouTube Music rate limit exceeded.", retry_after) from exc
             if exc.response is not None and exc.response.status_code in {401, 403}:
-                raise AuthenticationError(
-                    "YouTube Music credentials are invalid."
-                ) from exc
+                raise AuthenticationError("YouTube Music credentials are invalid.") from exc
             raise
 
     def authenticate(self) -> AccountIdentity:
@@ -130,17 +145,13 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
             )
         return self._identity
 
-    def _slice(
-        self, items: list[dict[str, Any]], cursor: str | None, page_size: int
-    ) -> Page:
+    def _slice(self, items: list[dict[str, Any]], cursor: str | None, page_size: int) -> Page:
         offset = int(cursor or "0")
         next_offset = offset + page_size
         next_cursor = str(next_offset) if next_offset < len(items) else None
         return Page(items=items[offset:next_offset], next_cursor=next_cursor)
 
-    def list_collection(
-        self, kind: CollectionKind, cursor: str | None = None, page_size: int = 50
-    ) -> Page:
+    def list_collection(self, kind: CollectionKind, cursor: str | None = None, page_size: int = 50) -> Page:
         client = self._ensure_client()
         if kind == CollectionKind.PLAYLIST:
             items = self._call(client.get_library_playlists, limit=None)
@@ -167,17 +178,13 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
             return self._slice(items, cursor, page_size)
         raise ValueError(f"Unsupported YouTube Music collection: {kind}")
 
-    def get_playlist_items(
-        self, playlist_id: str, cursor: str | None = None, page_size: int = 100
-    ) -> Page:
+    def get_playlist_items(self, playlist_id: str, cursor: str | None = None, page_size: int = 100) -> Page:
         client = self._ensure_client()
         payload = self._call(client.get_playlist, playlist_id, limit=None)
         items = payload.get("tracks", []) if isinstance(payload, dict) else []
         return self._slice(items, cursor, page_size)
 
-    def search(
-        self, kind: CollectionKind, query: str, limit: int = 10
-    ) -> list[dict[str, Any]]:
+    def search(self, kind: CollectionKind, query: str, limit: int = 10) -> list[dict[str, Any]]:
         client = self._ensure_client()
         filter_value = {
             CollectionKind.SAVED_TRACK: "songs",
@@ -215,9 +222,7 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
             self._call(client.rate_song, item_id, LikeStatus.LIKE)
 
     def save_albums(self, item_ids: list[str]) -> None:
-        raise UnsupportedOperationError(
-            "YouTube Music album writes are not supported in v1."
-        )
+        raise UnsupportedOperationError("YouTube Music album writes are not supported in v1.")
 
     def follow_artists(self, item_ids: list[str]) -> None:
         client = self._ensure_client()
@@ -225,11 +230,7 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
             self._call(client.subscribe_artists, batch)
 
     def save_podcasts(self, item_ids: list[str]) -> None:
-        raise UnsupportedOperationError(
-            "YouTube Music podcast writes are not supported in v1."
-        )
+        raise UnsupportedOperationError("YouTube Music podcast writes are not supported in v1.")
 
     def save_episodes(self, item_ids: list[str]) -> None:
-        raise UnsupportedOperationError(
-            "YouTube Music episode writes are not supported in v1."
-        )
+        raise UnsupportedOperationError("YouTube Music episode writes are not supported in v1.")

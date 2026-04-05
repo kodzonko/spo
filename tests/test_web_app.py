@@ -129,9 +129,83 @@ def test_web_app_can_save_and_validate_ytmusic_connection(app_state):
     assert "/connections?error=" in invalid.headers["location"]
 
 
-def test_web_app_handles_spotify_connect_callback_and_event_stream(
-    app_state, monkeypatch
-):
+def test_web_app_can_start_and_complete_ytmusic_oauth_connection(app_state, monkeypatch):
+    FakeYouTubeMusicAdapter.STATE["yt-oauth"] = {
+        "identity": {
+            "remote_account_id": "yt-oauth-account",
+            "display_name": "OAuth YT Music",
+        },
+        "collections": {},
+        "playlist_items": {},
+        "search": {},
+        "catalog": {},
+    }
+
+    class FakeOAuthCredentials:
+        def __init__(self, client_id: str, client_secret: str):
+            assert client_id == "google-client-id"
+            assert client_secret == "google-client-secret"
+
+        def get_code(self):
+            return {
+                "device_code": "device-code",
+                "user_code": "ABCD-EFGH",
+                "verification_url": "https://google.example/device",
+                "interval": 1,
+                "expires_in": 600,
+            }
+
+        def token_from_code(self, device_code: str):
+            assert device_code == "device-code"
+            return {
+                "access_token": "oauth-access-token",
+                "refresh_token": "oauth-refresh-token",
+                "expires_in": 3600,
+                "token_type": "Bearer",
+                "scope": "https://www.googleapis.com/auth/youtube",
+                "state_key": "yt-oauth",
+            }
+
+    monkeypatch.setattr("spo.app.OAuthCredentials", FakeOAuthCredentials)
+
+    client = TestClient(create_app(app_state))
+
+    start = client.post(
+        "/api/connections/ytmusic/oauth/start",
+        data={
+            "client_id": "google-client-id",
+            "client_secret": "google-client-secret",
+        },
+        follow_redirects=False,
+    )
+    assert start.status_code == 303
+    flow_url = start.headers["location"]
+    assert flow_url.startswith("/connections/ytmusic/oauth/")
+
+    flow_page = client.get(flow_url)
+    assert flow_page.status_code == 200
+    assert "Continue with Google" in flow_page.text
+    assert "ABCD-EFGH" in flow_page.text
+
+    flow_id = flow_url.rsplit("/", maxsplit=1)[-1]
+    status = client.get(f"/api/connections/ytmusic/oauth/{flow_id}/status")
+    assert status.status_code == 200
+    assert status.json()["status"] == "connected"
+    assert "/connections?message=" in status.json()["redirect_url"]
+
+    accounts = app_state.db.find_account_by_service(Service.YTMUSIC.value)
+    assert len(accounts) == 1
+    assert accounts[0]["auth_status"] == "connected"
+    assert accounts[0]["display_name"] == "OAuth YT Music"
+
+    credentials = app_state.db.get_credentials(int(accounts[0]["id"]))
+    assert credentials is not None
+    assert credentials["credential_type"] == CredentialType.YTMUSIC_OAUTH.value
+    assert credentials["payload"]["data"]["refresh_token"] == "oauth-refresh-token"
+    assert credentials["payload"]["oauth_client"]["client_id"] == "google-client-id"
+
+
+def test_web_app_handles_spotify_connect_callback_and_event_stream(app_state, monkeypatch):
     app = create_app(app_state)
     client = TestClient(app)
 
@@ -155,12 +229,8 @@ def test_web_app_handles_spotify_connect_callback_and_event_stream(
             display_name="Connected Spotify",
         )
 
-    monkeypatch.setattr(
-        SpotifyAdapter, "build_authorize_url", staticmethod(fake_build_authorize_url)
-    )
-    monkeypatch.setattr(
-        SpotifyAdapter, "exchange_code", staticmethod(fake_exchange_code)
-    )
+    monkeypatch.setattr(SpotifyAdapter, "build_authorize_url", staticmethod(fake_build_authorize_url))
+    monkeypatch.setattr(SpotifyAdapter, "exchange_code", staticmethod(fake_exchange_code))
     monkeypatch.setattr(SpotifyAdapter, "authenticate", fake_authenticate)
 
     auth_redirect = client.post(
@@ -197,9 +267,7 @@ def test_web_app_handles_spotify_connect_callback_and_event_stream(
         remote_account_id="yt-stream",
         display_name="YT Stream",
     )
-    job_id = app_state.db.create_job(
-        int(updated["id"]), target_account_id, ["saved_track"]
-    )
+    job_id = app_state.db.create_job(int(updated["id"]), target_account_id, ["saved_track"])
     app_state.db.append_event(job_id, "info", "hello stream")
 
     assert client.get(f"/api/jobs/{job_id}").status_code == 200
@@ -236,16 +304,10 @@ async def test_event_stream_endpoint_yields_existing_events(app_state, monkeypat
         remote_account_id="yt-stream",
         display_name="YT Stream",
     )
-    job_id = app_state.db.create_job(
-        source_account_id, target_account_id, ["saved_track"]
-    )
+    job_id = app_state.db.create_job(source_account_id, target_account_id, ["saved_track"])
     app_state.db.append_event(job_id, "info", "hello stream")
 
-    route = next(
-        route
-        for route in app.router.routes
-        if getattr(route, "path", "") == "/api/jobs/{job_id}/events"
-    )
+    route = next(route for route in app.router.routes if getattr(route, "path", "") == "/api/jobs/{job_id}/events")
 
     class FakeRequest:
         def __init__(self):
