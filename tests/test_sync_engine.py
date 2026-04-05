@@ -526,3 +526,38 @@ def test_rate_limited_job_pauses_then_auto_resumes(app_state: AppState) -> None:
     assert completed_job is not None
     assert completed_job["status"] == JobStatus.COMPLETED.value
     assert target_state["save_track_calls"] == [["yt-track-9"]]
+
+
+def test_sync_engine_pauses_when_credentials_are_missing(app_state: AppState) -> None:
+    """Test that jobs pause for authentication before creating adapters."""
+    source_account_id = app_state.db.upsert_account(
+        service=Service.SPOTIFY.value,
+        auth_status="connected",
+        remote_account_id="spotify-src",
+        display_name="Source Spotify",
+    )
+    target_account_id = app_state.db.upsert_account(
+        service=Service.YTMUSIC.value,
+        auth_status="connected",
+        remote_account_id="yt-target",
+        display_name="Target YT Music",
+    )
+    app_state.db.save_credentials(
+        source_account_id,
+        CredentialType.SPOTIFY_OAUTH.value,
+        {"state_key": "source"},
+    )
+    job_id = app_state.db.create_job(
+        source_account_id,
+        target_account_id,
+        [CollectionKind.SAVED_TRACK.value],
+    )
+
+    app_state.runner.start(job_id)
+    app_state.runner.wait()
+
+    job = app_state.db.get_job(job_id)
+    assert job is not None
+    assert job["status"] == JobStatus.PAUSED_AUTH.value
+    assert job["phase"] == JobStatus.PAUSED_AUTH.value
+    assert job["last_error"] == "One or more accounts are missing credentials."

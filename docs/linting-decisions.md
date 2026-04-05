@@ -41,3 +41,10 @@ Option A was suppressing `C901` on orchestration methods like `_apply_playlists`
 Option B was extracting per-playlist, per-library-entity, and per-item helper methods so the top-level sync methods stay readable while the detailed branches remain explicit and testable.
 
 This repository now uses option B because it keeps the orchestration path easy to follow, avoids normalizing lint suppressions for core sync code, and makes it easier to cover playlist edge cases such as mixed item kinds alongside library-collection match and skip flows.
+
+## Job Execution Orchestration
+
+Option A was keeping `run_job` as a single method that mixed setup, authentication persistence, per-collection dispatch, and terminal error handling.
+Option B was moving those responsibilities into small private helpers coordinated by a lightweight job execution context.
+
+This repository now uses option B because the main sync entry point stays readable under Ruff's statement limits, and setup or pause/fail paths can be exercised directly in integration-style tests without weakening the lint rules.

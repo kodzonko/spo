@@ -22,7 +22,7 @@ from spo.matching import (
     normalize_text,
     playlist_name_match_score,
 )
-from spo.models import CanonicalWork, CollectionKind, JobStatus, Service, TaskState
+from spo.models import AccountIdentity, CanonicalWork, CollectionKind, JobStatus, Service, TaskState
 from spo.services import SpotifyAdapter, YouTubeMusicAdapter
 from spo.utils import json_dumps, stable_hash, utcnow
 
@@ -81,6 +81,22 @@ class PlaylistBatchState:
     source_seen: Counter[str]
     target_items_counter: Counter[str]
     pending_items: list[PendingPlaylistItem]
+
+
+@dataclass(slots=True)
+class JobRunContext:
+    """Shared state for one synchronization job execution."""
+
+    job_id: int
+    job: dict[str, Any]
+    source_account: dict[str, Any]
+    target_account: dict[str, Any]
+    source_credentials: dict[str, Any]
+    target_credentials: dict[str, Any]
+    source_service: Service
+    target_service: Service
+    source_adapter: StreamingServiceAdapter
+    target_adapter: StreamingServiceAdapter
 
 
 class ServiceRegistry:
@@ -168,184 +184,262 @@ class SyncEngine:
 
     def run_job(self, job_id: int, is_cancelled: Callable[[], bool]) -> None:
         """Run a synchronization job until completion, pause, or failure."""
+        context = self._build_job_context(job_id)
+        if context is None:
+            return
+
+        self._mark_job_started(context)
+
+        try:
+            self._authenticate_job_context(context)
+            if self._sync_selected_collections(context, is_cancelled):
+                return
+            self._complete_job(context.job_id)
+        except AuthenticationError as exc:
+            self._pause_for_auth_error(context.job_id, str(exc))
+        except RateLimitError as exc:
+            self._pause_for_rate_limit(context, exc)
+        except Exception as exc:  # noqa: BLE001 - job runner must convert unexpected adapter errors into job state
+            self._fail_job(context.job_id, exc)
+
+    def _build_job_context(self, job_id: int) -> JobRunContext | None:
         job = self.db.get_job(job_id)
-        if not job:
+        if job is None:
             message = f"Unknown job {job_id}"
             raise ValueError(message)
 
         source_account = self.db.get_account(int(job["source_account_id"]))
         target_account = self.db.get_account(int(job["target_account_id"]))
-        if not source_account or not target_account:
+        if source_account is None or target_account is None:
             raise ValueError("Job references missing accounts.")
 
         source_credentials = self.db.get_credentials(int(source_account["id"]))
         target_credentials = self.db.get_credentials(int(target_account["id"]))
-        if not source_credentials or not target_credentials:
-            self.db.update_job(
-                job_id,
-                status=JobStatus.PAUSED_AUTH.value,
-                phase=JobStatus.PAUSED_AUTH.value,
-                last_error="One or more accounts are missing credentials.",
-            )
-            return
+        if source_credentials is None or target_credentials is None:
+            self._pause_for_missing_credentials(job_id)
+            return None
 
         source_service = Service(source_account["service"])
         target_service = Service(target_account["service"])
-        source_adapter = self.registry.create(
-            service=source_service,
-            account_id=int(source_account["id"]),
-            credential_payload=source_credentials["payload"],
-        )
-        target_adapter = self.registry.create(
-            service=target_service,
-            account_id=int(target_account["id"]),
-            credential_payload=target_credentials["payload"],
-        )
-
-        if not job["started_at"]:
-            self.db.update_job(job_id, started_at=utcnow())
-
-        try:
-            source_identity = source_adapter.authenticate()
-            target_identity = target_adapter.authenticate()
-            self.db.save_credentials(
-                int(source_account["id"]),
-                source_credentials["credential_type"],
-                source_adapter.persisted_payload,
-                last_validated_at=utcnow(),
-            )
-            self.db.save_credentials(
-                int(target_account["id"]),
-                target_credentials["credential_type"],
-                target_adapter.persisted_payload,
-                last_validated_at=utcnow(),
-            )
-            self.db.upsert_account(
+        return JobRunContext(
+            job_id=job_id,
+            job=job,
+            source_account=source_account,
+            target_account=target_account,
+            source_credentials=source_credentials,
+            target_credentials=target_credentials,
+            source_service=source_service,
+            target_service=target_service,
+            source_adapter=self.registry.create(
+                service=source_service,
                 account_id=int(source_account["id"]),
-                service=source_service.value,
-                remote_account_id=source_identity.remote_account_id,
-                display_name=source_identity.display_name,
-                auth_status="connected",
-                oauth_state=None,
-            )
-            self.db.upsert_account(
+                credential_payload=source_credentials["payload"],
+            ),
+            target_adapter=self.registry.create(
+                service=target_service,
                 account_id=int(target_account["id"]),
-                service=target_service.value,
-                remote_account_id=target_identity.remote_account_id,
-                display_name=target_identity.display_name,
-                auth_status="connected",
-                oauth_state=None,
-            )
-            self.db.append_event(
-                job_id,
-                "info",
-                f"Authenticated {source_identity.display_name} -> {target_identity.display_name}.",
+                credential_payload=target_credentials["payload"],
+            ),
+        )
+
+    def _mark_job_started(self, context: JobRunContext) -> None:
+        if not context.job["started_at"]:
+            self.db.update_job(context.job_id, started_at=utcnow())
+
+    def _authenticate_job_context(self, context: JobRunContext) -> None:
+        source_identity = context.source_adapter.authenticate()
+        target_identity = context.target_adapter.authenticate()
+        self._save_authenticated_credentials(context)
+        self._save_connected_account(context.source_account, context.source_service, source_identity)
+        self._save_connected_account(context.target_account, context.target_service, target_identity)
+        self.db.append_event(
+            context.job_id,
+            "info",
+            f"Authenticated {source_identity.display_name} -> {target_identity.display_name}.",
+        )
+
+    def _save_authenticated_credentials(self, context: JobRunContext) -> None:
+        validated_at = utcnow()
+        for account, credentials, adapter in (
+            (context.source_account, context.source_credentials, context.source_adapter),
+            (context.target_account, context.target_credentials, context.target_adapter),
+        ):
+            self.db.save_credentials(
+                int(account["id"]),
+                credentials["credential_type"],
+                adapter.persisted_payload,
+                last_validated_at=validated_at,
             )
 
-            selected_kinds = [CollectionKind(value) for value in job["scope"]]
-            for kind in selected_kinds:
-                if is_cancelled():
-                    self._cancel_job(job_id)
-                    return
-                self.db.update_job(
-                    job_id,
-                    status=JobStatus.SNAPSHOTTING.value,
-                    phase=JobStatus.SNAPSHOTTING.value,
-                    current_collection_kind=kind.value,
-                )
-                if not source_adapter.capabilities.can_read(kind):
-                    self._skip_collection(
-                        job_id,
-                        kind,
-                        f"{source_service.value} cannot read {kind.value}.",
-                    )
-                    continue
+    def _save_connected_account(
+        self,
+        account: dict[str, Any],
+        service: Service,
+        identity: AccountIdentity,
+    ) -> None:
+        self.db.upsert_account(
+            account_id=int(account["id"]),
+            service=service.value,
+            remote_account_id=identity.remote_account_id,
+            display_name=identity.display_name,
+            auth_status="connected",
+            oauth_state=None,
+        )
 
-                self._snapshot_collection(job_id, source_adapter, kind, is_cancelled)
+    def _sync_selected_collections(
+        self,
+        context: JobRunContext,
+        is_cancelled: Callable[[], bool],
+    ) -> bool:
+        for kind in (CollectionKind(value) for value in context.job["scope"]):
+            if self._sync_collection(context, kind, is_cancelled):
+                return True
+        return False
 
-                self.db.update_job(
-                    job_id,
-                    status=JobStatus.APPLYING.value,
-                    phase=JobStatus.APPLYING.value,
-                    current_collection_kind=kind.value,
-                )
-                if not target_adapter.capabilities.can_write(kind):
-                    count = self.db.count_source_entities(job_id, collection_kind=kind.value)
-                    if count:
-                        self.db.increment_job_counter(job_id, "progress_skipped_count", count)
-                    self._skip_collection(
-                        job_id,
-                        kind,
-                        f"{target_service.value} cannot write {kind.value} in v1.",
-                    )
-                    continue
+    def _sync_collection(
+        self,
+        context: JobRunContext,
+        kind: CollectionKind,
+        is_cancelled: Callable[[], bool],
+    ) -> bool:
+        if is_cancelled():
+            self._cancel_job(context.job_id)
+            return True
 
-                if kind == CollectionKind.PLAYLIST:
-                    self._apply_playlists(job_id, source_adapter, target_adapter, is_cancelled)
-                else:
-                    self._apply_library_collection(job_id, source_adapter, target_adapter, kind, is_cancelled)
+        self._set_collection_phase(context.job_id, JobStatus.SNAPSHOTTING, kind)
+        if not context.source_adapter.capabilities.can_read(kind):
+            self._skip_collection(
+                context.job_id,
+                kind,
+                f"{context.source_service.value} cannot read {kind.value}.",
+            )
+            return False
 
-            final_job = self.db.get_job(job_id)
-            status = JobStatus.COMPLETED.value
-            if final_job and (
-                int(final_job["progress_skipped_count"]) > 0 or int(final_job["progress_failed_count"]) > 0
-            ):
-                status = JobStatus.COMPLETED_WITH_WARNINGS.value
-            self.db.update_job(
-                job_id,
-                status=status,
-                phase=status,
-                current_collection_kind=None,
-                finished_at=utcnow(),
-                last_error=None,
+        self._snapshot_collection(context.job_id, context.source_adapter, kind, is_cancelled)
+        self._set_collection_phase(context.job_id, JobStatus.APPLYING, kind)
+        if not context.target_adapter.capabilities.can_write(kind):
+            self._skip_unwritable_collection(context.job_id, context.target_service, kind)
+            return False
+
+        self._apply_collection(context, kind, is_cancelled)
+        return False
+
+    def _set_collection_phase(self, job_id: int, status: JobStatus, kind: CollectionKind) -> None:
+        self.db.update_job(
+            job_id,
+            status=status.value,
+            phase=status.value,
+            current_collection_kind=kind.value,
+        )
+
+    def _skip_unwritable_collection(
+        self,
+        job_id: int,
+        target_service: Service,
+        kind: CollectionKind,
+    ) -> None:
+        count = self.db.count_source_entities(job_id, collection_kind=kind.value)
+        if count:
+            self.db.increment_job_counter(job_id, "progress_skipped_count", count)
+        self._skip_collection(
+            job_id,
+            kind,
+            f"{target_service.value} cannot write {kind.value} in v1.",
+        )
+
+    def _apply_collection(
+        self,
+        context: JobRunContext,
+        kind: CollectionKind,
+        is_cancelled: Callable[[], bool],
+    ) -> None:
+        if kind == CollectionKind.PLAYLIST:
+            self._apply_playlists(
+                context.job_id,
+                context.source_adapter,
+                context.target_adapter,
+                is_cancelled,
             )
-            self.db.append_event(job_id, "info", "Synchronization completed.")
-        except AuthenticationError as exc:
-            self.db.update_job(
-                job_id,
-                status=JobStatus.PAUSED_AUTH.value,
-                phase=JobStatus.PAUSED_AUTH.value,
-                last_error=str(exc),
-            )
-            self.db.append_event(job_id, "error", str(exc))
-        except RateLimitError as exc:
-            retry_after_seconds = int(float(exc.retry_after or 3600))
-            cooldown_until = (
-                (datetime.now(UTC) + timedelta(seconds=retry_after_seconds)).replace(microsecond=0).isoformat()
-            )
-            account_id = int(target_account["id"])
-            job_state = self.db.get_job(job_id)
-            if job_state is not None and job_state["phase"] == JobStatus.SNAPSHOTTING.value:
-                account_id = int(source_account["id"])
-            self.db.set_cooldown(
-                account_id=account_id,
-                operation="sync",
-                cooldown_until=cooldown_until,
-                reason=str(exc),
-                vendor_hint=f"retry_after={retry_after_seconds}",
-            )
-            self.db.update_job(
-                job_id,
-                status=JobStatus.PAUSED_RATE_LIMIT.value,
-                phase=JobStatus.PAUSED_RATE_LIMIT.value,
-                last_error=str(exc),
-                resume_token=cooldown_until,
-            )
-            self.db.append_event(
-                job_id,
-                "warning",
-                f"Paused due to rate limiting until {cooldown_until}.",
-            )
-        except Exception as exc:  # pragma: no cover - defensive fallback
-            logger.exception("Job %s failed", job_id)
-            self.db.update_job(
-                job_id,
-                status=JobStatus.FAILED.value,
-                phase=JobStatus.FAILED.value,
-                last_error=str(exc),
-                finished_at=utcnow(),
-            )
-            self.db.append_event(job_id, "error", f"Synchronization failed: {exc}")
+            return
+        self._apply_library_collection(
+            context.job_id,
+            context.source_adapter,
+            context.target_adapter,
+            kind,
+            is_cancelled,
+        )
+
+    def _complete_job(self, job_id: int) -> None:
+        final_job = self.db.get_job(job_id)
+        status = JobStatus.COMPLETED.value
+        if final_job and (int(final_job["progress_skipped_count"]) > 0 or int(final_job["progress_failed_count"]) > 0):
+            status = JobStatus.COMPLETED_WITH_WARNINGS.value
+        self.db.update_job(
+            job_id,
+            status=status,
+            phase=status,
+            current_collection_kind=None,
+            finished_at=utcnow(),
+            last_error=None,
+        )
+        self.db.append_event(job_id, "info", "Synchronization completed.")
+
+    def _pause_for_missing_credentials(self, job_id: int) -> None:
+        self.db.update_job(
+            job_id,
+            status=JobStatus.PAUSED_AUTH.value,
+            phase=JobStatus.PAUSED_AUTH.value,
+            last_error="One or more accounts are missing credentials.",
+        )
+
+    def _pause_for_auth_error(self, job_id: int, message: str) -> None:
+        self.db.update_job(
+            job_id,
+            status=JobStatus.PAUSED_AUTH.value,
+            phase=JobStatus.PAUSED_AUTH.value,
+            last_error=message,
+        )
+        self.db.append_event(job_id, "error", message)
+
+    def _pause_for_rate_limit(self, context: JobRunContext, exc: RateLimitError) -> None:
+        retry_after_seconds = int(float(exc.retry_after or 3600))
+        cooldown_until = (datetime.now(UTC) + timedelta(seconds=retry_after_seconds)).replace(microsecond=0).isoformat()
+        self.db.set_cooldown(
+            account_id=self._rate_limited_account_id(context),
+            operation="sync",
+            cooldown_until=cooldown_until,
+            reason=str(exc),
+            vendor_hint=f"retry_after={retry_after_seconds}",
+        )
+        self.db.update_job(
+            context.job_id,
+            status=JobStatus.PAUSED_RATE_LIMIT.value,
+            phase=JobStatus.PAUSED_RATE_LIMIT.value,
+            last_error=str(exc),
+            resume_token=cooldown_until,
+        )
+        self.db.append_event(
+            context.job_id,
+            "warning",
+            f"Paused due to rate limiting until {cooldown_until}.",
+        )
+
+    def _rate_limited_account_id(self, context: JobRunContext) -> int:
+        job_state = self.db.get_job(context.job_id)
+        if job_state is not None and job_state["phase"] == JobStatus.SNAPSHOTTING.value:
+            return int(context.source_account["id"])
+        return int(context.target_account["id"])
+
+    def _fail_job(self, job_id: int, exc: Exception) -> None:
+        logger.exception("Job %s failed", job_id)
+        self.db.update_job(
+            job_id,
+            status=JobStatus.FAILED.value,
+            phase=JobStatus.FAILED.value,
+            last_error=str(exc),
+            finished_at=utcnow(),
+        )
+        self.db.append_event(job_id, "error", f"Synchronization failed: {exc}")
 
     def _cancel_job(self, job_id: int) -> None:
         self.db.update_job(
