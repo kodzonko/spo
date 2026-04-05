@@ -56,6 +56,13 @@ Option B was consolidating those flows around a single response or page return w
 
 This repository now uses option B because it keeps OAuth cleanup and collection-fetch behavior testable without normalizing lint suppressions, and it reduces the risk of one branch forgetting shared follow-up work like pagination or flow removal.
 
+## Web Connection Route Duplication
+
+Option A was leaving the FastAPI connection handlers to repeat the same redirect construction, pending-account setup, and connected-account persistence blocks inline.
+Option B was extracting shared helpers for redirects and account persistence so each route keeps only its flow-specific branching.
+
+This repository now uses option B because it reduces Sonar-style duplication findings in `spo.app`, keeps validation errors behaviorally consistent across Spotify and YouTube Music flows, and makes route-level changes less likely to drift in future edits.
+
 ## Validation Raises Inside Broad Try Blocks
 
 Option A was raising validation and authentication exceptions inline inside broad `try` blocks and relying on the surrounding `except` clauses to normalize them.

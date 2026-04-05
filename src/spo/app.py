@@ -29,7 +29,7 @@ from ytmusicapi.exceptions import YTMusicServerError
 
 from spo.config import Settings, load_settings
 from spo.exceptions import AuthenticationError, RateLimitError, ValidationError
-from spo.models import CollectionKind, CredentialType, Service
+from spo.models import AccountIdentity, CollectionKind, CredentialType, Service
 from spo.persistence import AccountUpsert, Database
 from spo.services.spotify import SpotifyAdapter, sanitize_redirect_uri
 from spo.sync import JobRunner, ServiceRegistry, SyncEngine
@@ -46,6 +46,21 @@ template_env = Environment(
     loader=DictLoader(TEMPLATES),
     autoescape=select_autoescape(default_for_string=True),
 )
+
+HTTP_BAD_REQUEST = int(requests.codes["bad_request"])
+HTTP_NOT_FOUND = int(requests.codes["not_found"])
+HTTP_GONE = int(requests.codes["gone"])
+HTTP_BAD_GATEWAY = int(requests.codes["bad_gateway"])
+HTTP_SEE_OTHER = int(requests.codes["see_other"])
+HTTP_OK = int(requests.codes["ok"])
+
+JOB_NOT_FOUND_MESSAGE = "Job not found."
+SPOTIFY_ACCOUNT_LABEL = "Spotify account"
+YTMUSIC_ACCOUNT_LABEL = "YouTube Music account"
+YTMUSIC_HEADERS_REQUIRED_MESSAGE = "Paste browser headers JSON, or use Connect YouTube Music above."
+YTMUSIC_OAUTH_CREDENTIALS_REQUIRED_MESSAGE = "Provide a Google OAuth client ID and secret for YouTube Music."
+YTMUSIC_OAUTH_EXPIRED_MESSAGE = "YouTube Music authorization expired. Start the connection again."
+YTMUSIC_CREDENTIALS_SAVED_MESSAGE = "YouTube Music credentials saved."
 
 
 @dataclass(slots=True)
@@ -151,22 +166,244 @@ def _latest_account_for_service(db: Database, service: Service) -> dict[str, Any
 
 def _form_int(value: UploadFile | str, field_name: str) -> int:
     if not isinstance(value, str):
-        raise HTTPException(status_code=400, detail=f"Invalid {field_name}.")
+        raise HTTPException(status_code=HTTP_BAD_REQUEST, detail=f"Invalid {field_name}.")
     try:
         return int(value)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid {field_name}.") from exc
-
-
-def _ytmusic_account_defaults(existing: dict[str, Any] | None) -> dict[str, str | None]:
-    return {
-        "remote_account_id": existing.get("remote_account_id") if existing else None,
-        "display_name": existing.get("display_name") if existing else "YouTube Music account",
-    }
+        raise HTTPException(status_code=HTTP_BAD_REQUEST, detail=f"Invalid {field_name}.") from exc
 
 
 def _raise_validation_error(message: str) -> NoReturn:
     raise ValidationError(message)
+
+
+def _redirect(location: str) -> RedirectResponse:
+    return RedirectResponse(location, status_code=HTTP_SEE_OTHER)
+
+
+def _connections_redirect(message: str, *, error: bool) -> RedirectResponse:
+    return _redirect(_connections_redirect_url(message, error=error))
+
+
+def _job_redirect_url(job_id: int, *, message: str | None = None, error: str | None = None) -> str:
+    if message is not None:
+        return f"/jobs/{job_id}?message={quote_plus(message)}"
+    if error is not None:
+        return f"/jobs/{job_id}?error={quote_plus(error)}"
+    return f"/jobs/{job_id}"
+
+
+def _job_redirect(job_id: int, *, message: str | None = None, error: str | None = None) -> RedirectResponse:
+    return _redirect(_job_redirect_url(job_id, message=message, error=error))
+
+
+def _pending_account_upsert(
+    service: Service,
+    existing: dict[str, Any] | None,
+    *,
+    default_display_name: str,
+    oauth_state: str | None,
+) -> AccountUpsert:
+    return AccountUpsert(
+        account_id=int(existing["id"]) if existing else None,
+        service=service.value,
+        remote_account_id=existing.get("remote_account_id") if existing else None,
+        display_name=existing.get("display_name") if existing else default_display_name,
+        auth_status="pending",
+        oauth_state=oauth_state,
+    )
+
+
+def _connected_account_upsert(account_id: int, service: Service, identity: AccountIdentity) -> AccountUpsert:
+    return AccountUpsert(
+        account_id=account_id,
+        service=service.value,
+        remote_account_id=identity.remote_account_id,
+        display_name=identity.display_name,
+        auth_status="connected",
+        oauth_state=None,
+    )
+
+
+def _save_validated_credentials(
+    app_state: AppState,
+    account_id: int,
+    credential_type: CredentialType,
+    payload: dict[str, Any],
+) -> None:
+    app_state.db.save_credentials(
+        account_id,
+        credential_type.value,
+        payload,
+        last_validated_at=utcnow(),
+    )
+
+
+def _build_ytmusic_headers_payload(headers_json: str | None) -> tuple[CredentialType, dict[str, Any]]:
+    if not headers_json or not headers_json.strip():
+        _raise_validation_error(YTMUSIC_HEADERS_REQUIRED_MESSAGE)
+    return (
+        CredentialType.YTMUSIC_HEADERS,
+        {
+            "credential_type": CredentialType.YTMUSIC_HEADERS.value,
+            "data": json.loads(headers_json),
+        },
+    )
+
+
+def _resolve_ytmusic_oauth_client_credentials(client_id: str, client_secret: str) -> tuple[str, str]:
+    resolved_client_id = client_id.strip()
+    resolved_client_secret = client_secret.strip()
+    if not resolved_client_id or not resolved_client_secret:
+        _raise_validation_error(YTMUSIC_OAUTH_CREDENTIALS_REQUIRED_MESSAGE)
+    return resolved_client_id, resolved_client_secret
+
+
+def _start_spotify_oauth(
+    app_state: AppState,
+    *,
+    client_id: str,
+    client_secret: str,
+    redirect_uri: str,
+) -> str:
+    oauth_state = secrets.token_urlsafe(24)
+    existing = _latest_account_for_service(app_state.db, Service.SPOTIFY)
+    account_id = app_state.db.upsert_account(
+        _pending_account_upsert(
+            Service.SPOTIFY,
+            existing,
+            default_display_name=SPOTIFY_ACCOUNT_LABEL,
+            oauth_state=oauth_state,
+        ),
+    )
+    payload = {
+        "client_id": client_id.strip(),
+        "client_secret": client_secret.strip(),
+        "redirect_uri": redirect_uri,
+    }
+    app_state.db.save_credentials(
+        account_id,
+        CredentialType.SPOTIFY_OAUTH.value,
+        payload,
+    )
+    return SpotifyAdapter.build_authorize_url(
+        app_state.settings,
+        payload,
+        oauth_state,
+    )
+
+
+def _resolve_spotify_callback_context(
+    app_state: AppState,
+    *,
+    code: str | None,
+    state: str | None,
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    if not code or not state:
+        _raise_validation_error("Spotify callback is missing code or state.")
+    account = app_state.db.find_account_by_oauth_state(Service.SPOTIFY.value, state)
+    if not account:
+        _raise_validation_error("Spotify callback state is not recognized.")
+    credentials = app_state.db.get_credentials(int(account["id"]))
+    if not credentials:
+        _raise_validation_error("Spotify credentials were not found for this callback.")
+    return code, account, credentials
+
+
+def _complete_spotify_callback(
+    app_state: AppState,
+    *,
+    account: dict[str, Any],
+    credential_payload: dict[str, Any],
+    code: str,
+) -> AccountIdentity:
+    payload = SpotifyAdapter.exchange_code(
+        settings=app_state.settings,
+        credential_payload=credential_payload,
+        code=code,
+    )
+    adapter = SpotifyAdapter(
+        account_id=int(account["id"]),
+        credential_payload=payload,
+        settings=app_state.settings,
+    )
+    identity = adapter.authenticate()
+    _save_validated_credentials(
+        app_state,
+        int(account["id"]),
+        CredentialType.SPOTIFY_OAUTH,
+        adapter.persisted_payload,
+    )
+    app_state.db.upsert_account(
+        _connected_account_upsert(int(account["id"]), Service.SPOTIFY, identity),
+    )
+    return identity
+
+
+def _save_ytmusic_connection(
+    app_state: AppState,
+    *,
+    credential_type: CredentialType,
+    payload: dict[str, Any],
+) -> None:
+    existing = _latest_account_for_service(app_state.db, Service.YTMUSIC)
+    account_id = app_state.db.upsert_account(
+        _pending_account_upsert(
+            Service.YTMUSIC,
+            existing,
+            default_display_name=YTMUSIC_ACCOUNT_LABEL,
+            oauth_state=None,
+        ),
+    )
+    app_state.db.save_credentials(account_id, credential_type.value, payload)
+    adapter = app_state.registry.create(
+        service=Service.YTMUSIC,
+        account_id=account_id,
+        credential_payload=payload,
+    )
+    identity = adapter.authenticate()
+    _save_validated_credentials(
+        app_state,
+        account_id,
+        credential_type,
+        adapter.persisted_payload,
+    )
+    app_state.db.upsert_account(
+        _connected_account_upsert(account_id, Service.YTMUSIC, identity),
+    )
+
+
+def _start_pending_ytmusic_oauth(
+    app_state: AppState,
+    *,
+    client_id: str,
+    client_secret: str,
+) -> str:
+    resolved_client_id, resolved_client_secret = _resolve_ytmusic_oauth_client_credentials(client_id, client_secret)
+    existing = _latest_account_for_service(app_state.db, Service.YTMUSIC)
+    account_id = app_state.db.upsert_account(
+        _pending_account_upsert(
+            Service.YTMUSIC,
+            existing,
+            default_display_name=YTMUSIC_ACCOUNT_LABEL,
+            oauth_state=None,
+        ),
+    )
+    flow = _start_ytmusic_oauth_flow(
+        account_id,
+        client_id=resolved_client_id,
+        client_secret=resolved_client_secret,
+    )
+    flow_id = secrets.token_urlsafe(24)
+    app_state.pending_ytmusic_oauth[flow_id] = flow
+    return flow_id
+
+
+def _require_job(app_state: AppState, job_id: int) -> dict[str, Any]:
+    job = app_state.db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=HTTP_NOT_FOUND, detail=JOB_NOT_FOUND_MESSAGE)
+    return job
 
 
 def _start_ytmusic_oauth_flow(
@@ -225,7 +462,7 @@ def _connections_redirect_url(message: str, *, error: bool) -> str:
 def _oauth_status_response(
     status: str,
     *,
-    status_code: int = 200,
+    status_code: int = HTTP_OK,
     message: str | None = None,
     redirect_url: str | None = None,
     interval_seconds: int | None = None,
@@ -252,14 +489,14 @@ def _poll_ytmusic_oauth_token(
         message = f"YouTube Music OAuth setup failed: {exc}"
         return _oauth_status_response(
             "error",
-            status_code=400,
+            status_code=HTTP_BAD_REQUEST,
             message=message,
             redirect_url=_connections_redirect_url(message, error=True),
         )
     except (YTMusicServerError, requests.RequestException, ValueError) as exc:
         return _oauth_status_response(
             "error",
-            status_code=502,
+            status_code=HTTP_BAD_GATEWAY,
             message=f"Could not finish YouTube Music OAuth: {exc}",
         )
 
@@ -281,14 +518,14 @@ def _complete_ytmusic_oauth(
         message = "YouTube Music authorization was denied or expired. Start the connection again."
         return _oauth_status_response(
             "error",
-            status_code=400,
+            status_code=HTTP_BAD_REQUEST,
             message=message,
             redirect_url=_connections_redirect_url(message, error=True),
         )
     if not token_response.get("access_token") or not token_response.get("refresh_token"):
         return _oauth_status_response(
             "error",
-            status_code=502,
+            status_code=HTTP_BAD_GATEWAY,
             message="YouTube Music OAuth did not return usable tokens.",
         )
 
@@ -312,28 +549,21 @@ def _complete_ytmusic_oauth(
             credential_payload=payload,
         )
         identity = adapter.authenticate()
-        app_state.db.save_credentials(
+        _save_validated_credentials(
+            app_state,
             flow.account_id,
-            CredentialType.YTMUSIC_OAUTH.value,
+            CredentialType.YTMUSIC_OAUTH,
             adapter.persisted_payload,
-            last_validated_at=utcnow(),
         )
         app_state.db.upsert_account(
-            AccountUpsert(
-                account_id=flow.account_id,
-                service=Service.YTMUSIC.value,
-                remote_account_id=identity.remote_account_id,
-                display_name=identity.display_name,
-                auth_status="connected",
-                oauth_state=None,
-            ),
+            _connected_account_upsert(flow.account_id, Service.YTMUSIC, identity),
         )
     except AuthenticationError as exc:
         app_state.pending_ytmusic_oauth.pop(flow_id, None)
         message = str(exc)
         return _oauth_status_response(
             "error",
-            status_code=400,
+            status_code=HTTP_BAD_REQUEST,
             message=message,
             redirect_url=_connections_redirect_url(message, error=True),
         )
@@ -405,34 +635,13 @@ def _register_spotify_connection_routes(app: FastAPI, app_state: AppState) -> No
         redirect_uri: Annotated[str | None, Form()] = None,
     ) -> RedirectResponse:
         redirect_uri = sanitize_redirect_uri(redirect_uri, app_state.settings)
-        oauth_state = secrets.token_urlsafe(24)
-        existing = _latest_account_for_service(app_state.db, Service.SPOTIFY)
-        account_id = app_state.db.upsert_account(
-            AccountUpsert(
-                account_id=int(existing["id"]) if existing else None,
-                service=Service.SPOTIFY.value,
-                remote_account_id=existing.get("remote_account_id") if existing else None,
-                display_name=existing.get("display_name") if existing else "Spotify account",
-                auth_status="pending",
-                oauth_state=oauth_state,
-            ),
+        auth_url = _start_spotify_oauth(
+            app_state,
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uri=redirect_uri,
         )
-        payload = {
-            "client_id": client_id.strip(),
-            "client_secret": client_secret.strip(),
-            "redirect_uri": redirect_uri,
-        }
-        app_state.db.save_credentials(
-            account_id,
-            CredentialType.SPOTIFY_OAUTH.value,
-            payload,
-        )
-        auth_url = SpotifyAdapter.build_authorize_url(
-            app_state.settings,
-            payload,
-            oauth_state,
-        )
-        return RedirectResponse(auth_url, status_code=303)
+        return _redirect(auth_url)
 
     @app.get("/callback/spotify")
     async def spotify_callback(
@@ -441,40 +650,21 @@ def _register_spotify_connection_routes(app: FastAPI, app_state: AppState) -> No
         error: str | None = None,
     ) -> RedirectResponse:
         if error:
-            error_message = f"Spotify authorization failed: {error}"
-            return RedirectResponse(
-                f"/connections?error={quote_plus(error_message)}",
-                status_code=303,
-            )
-        if not code or not state:
-            return RedirectResponse(
-                "/connections?error=Spotify callback is missing code or state.",
-                status_code=303,
-            )
-        account = app_state.db.find_account_by_oauth_state(Service.SPOTIFY.value, state)
-        if not account:
-            return RedirectResponse(
-                "/connections?error=Spotify callback state is not recognized.",
-                status_code=303,
-            )
-        credentials = app_state.db.get_credentials(int(account["id"]))
-        if not credentials:
-            return RedirectResponse(
-                "/connections?error=Spotify credentials were not found for this callback.",
-                status_code=303,
-            )
+            return _connections_redirect(f"Spotify authorization failed: {error}", error=True)
         try:
-            payload = SpotifyAdapter.exchange_code(
-                settings=app_state.settings,
-                credential_payload=credentials["payload"],
+            resolved_code, account, credentials = _resolve_spotify_callback_context(
+                app_state,
                 code=code,
+                state=state,
             )
-            adapter = SpotifyAdapter(
-                account_id=int(account["id"]),
-                credential_payload=payload,
-                settings=app_state.settings,
+            identity = _complete_spotify_callback(
+                app_state,
+                account=account,
+                credential_payload=credentials["payload"],
+                code=resolved_code,
             )
-            identity = adapter.authenticate()
+        except ValidationError as exc:
+            return _connections_redirect(str(exc), error=True)
         except (
             AuthenticationError,
             RateLimitError,
@@ -482,30 +672,10 @@ def _register_spotify_connection_routes(app: FastAPI, app_state: AppState) -> No
             SpotifyOauthError,
             requests.RequestException,
         ) as exc:
-            error_message = f"Spotify authorization failed: {exc}"
-            return RedirectResponse(
-                f"/connections?error={quote_plus(error_message)}",
-                status_code=303,
-            )
-        app_state.db.save_credentials(
-            int(account["id"]),
-            CredentialType.SPOTIFY_OAUTH.value,
-            adapter.persisted_payload,
-            last_validated_at=utcnow(),
-        )
-        app_state.db.upsert_account(
-            AccountUpsert(
-                account_id=int(account["id"]),
-                service=Service.SPOTIFY.value,
-                remote_account_id=identity.remote_account_id,
-                display_name=identity.display_name,
-                auth_status="connected",
-                oauth_state=None,
-            ),
-        )
-        return RedirectResponse(
-            f"/connections?message={quote_plus(f'Connected Spotify account {identity.display_name}.')}",
-            status_code=303,
+            return _connections_redirect(f"Spotify authorization failed: {exc}", error=True)
+        return _connections_redirect(
+            f"Connected Spotify account {identity.display_name}.",
+            error=False,
         )
 
 
@@ -520,60 +690,15 @@ def _register_ytmusic_manual_connection_route(app: FastAPI, app_state: AppState)
         headers_json: Annotated[str | None, Form()] = None,
     ) -> RedirectResponse:
         try:
-            payload: dict[str, Any]
-            credential_type: str
-            if headers_json and headers_json.strip():
-                payload = {
-                    "credential_type": CredentialType.YTMUSIC_HEADERS.value,
-                    "data": json.loads(headers_json),
-                }
-                credential_type = CredentialType.YTMUSIC_HEADERS.value
-            else:
-                _raise_validation_error("Paste browser headers JSON, or use Connect YouTube Music above.")
-            existing = _latest_account_for_service(app_state.db, Service.YTMUSIC)
-            account_defaults = _ytmusic_account_defaults(existing)
-            account_id = app_state.db.upsert_account(
-                AccountUpsert(
-                    account_id=int(existing["id"]) if existing else None,
-                    service=Service.YTMUSIC.value,
-                    remote_account_id=account_defaults["remote_account_id"],
-                    display_name=account_defaults["display_name"],
-                    auth_status="pending",
-                    oauth_state=None,
-                ),
+            credential_type, payload = _build_ytmusic_headers_payload(headers_json)
+            _save_ytmusic_connection(
+                app_state,
+                credential_type=credential_type,
+                payload=payload,
             )
-            app_state.db.save_credentials(account_id, credential_type, payload)
-            adapter = app_state.registry.create(
-                service=Service.YTMUSIC,
-                account_id=account_id,
-                credential_payload=payload,
-            )
-            identity = adapter.authenticate()
-            app_state.db.save_credentials(
-                account_id,
-                credential_type,
-                adapter.persisted_payload,
-                last_validated_at=utcnow(),
-            )
-            app_state.db.upsert_account(
-                AccountUpsert(
-                    account_id=account_id,
-                    service=Service.YTMUSIC.value,
-                    remote_account_id=identity.remote_account_id,
-                    display_name=identity.display_name,
-                    auth_status="connected",
-                    oauth_state=None,
-                ),
-            )
-            return RedirectResponse(
-                f"/connections?message={quote_plus('YouTube Music credentials saved.')}",
-                status_code=303,
-            )
+            return _connections_redirect(YTMUSIC_CREDENTIALS_SAVED_MESSAGE, error=False)
         except (json.JSONDecodeError, ValidationError, AuthenticationError) as exc:
-            return RedirectResponse(
-                f"/connections?error={quote_plus(str(exc))}",
-                status_code=303,
-            )
+            return _connections_redirect(str(exc), error=True)
 
 
 def _register_ytmusic_oauth_routes(app: FastAPI, app_state: AppState) -> None:
@@ -583,45 +708,20 @@ def _register_ytmusic_oauth_routes(app: FastAPI, app_state: AppState) -> None:
         client_secret: Annotated[str, Form()],
     ) -> RedirectResponse:
         try:
-            resolved_client_id = client_id.strip()
-            resolved_client_secret = client_secret.strip()
-            if not resolved_client_id or not resolved_client_secret:
-                _raise_validation_error("Provide a Google OAuth client ID and secret for YouTube Music.")
-
-            existing = _latest_account_for_service(app_state.db, Service.YTMUSIC)
-            account_defaults = _ytmusic_account_defaults(existing)
-            account_id = app_state.db.upsert_account(
-                AccountUpsert(
-                    account_id=int(existing["id"]) if existing else None,
-                    service=Service.YTMUSIC.value,
-                    remote_account_id=account_defaults["remote_account_id"],
-                    display_name=account_defaults["display_name"],
-                    auth_status="pending",
-                    oauth_state=None,
-                ),
+            flow_id = _start_pending_ytmusic_oauth(
+                app_state,
+                client_id=client_id,
+                client_secret=client_secret,
             )
-            flow = _start_ytmusic_oauth_flow(
-                account_id,
-                client_id=resolved_client_id,
-                client_secret=resolved_client_secret,
-            )
-            flow_id = secrets.token_urlsafe(24)
-            app_state.pending_ytmusic_oauth[flow_id] = flow
-            return RedirectResponse(f"/connections/ytmusic/oauth/{flow_id}", status_code=303)
+            return _redirect(f"/connections/ytmusic/oauth/{flow_id}")
         except (ValidationError, AuthenticationError) as exc:
-            return RedirectResponse(
-                f"/connections?error={quote_plus(str(exc))}",
-                status_code=303,
-            )
+            return _connections_redirect(str(exc), error=True)
 
     @app.get("/connections/ytmusic/oauth/{flow_id}", response_class=HTMLResponse)
     def ytmusic_oauth_page(flow_id: str, request: Request) -> Response:
         flow = _get_pending_ytmusic_oauth(app_state, flow_id)
         if flow is None:
-            return RedirectResponse(
-                "/connections?error=YouTube Music authorization expired. Start the connection again.",
-                status_code=303,
-            )
+            return _connections_redirect(YTMUSIC_OAUTH_EXPIRED_MESSAGE, error=True)
 
         return render_template(
             "ytmusic_oauth.html",
@@ -637,10 +737,10 @@ def _register_ytmusic_oauth_routes(app: FastAPI, app_state: AppState) -> None:
     async def ytmusic_oauth_status(flow_id: str) -> JSONResponse:
         flow = _get_pending_ytmusic_oauth(app_state, flow_id)
         if flow is None:
-            message = "YouTube Music authorization expired. Start the connection again."
+            message = YTMUSIC_OAUTH_EXPIRED_MESSAGE
             return _oauth_status_response(
                 "expired",
-                status_code=410,
+                status_code=HTTP_GONE,
                 message=message,
                 redirect_url=_connections_redirect_url(message, error=True),
             )
@@ -657,13 +757,13 @@ def _register_connection_test_route(app: FastAPI, app_state: AppState) -> None:
         try:
             enum_service = Service(service)
         except ValueError as exc:
-            raise HTTPException(status_code=404, detail="Unknown service") from exc
+            raise HTTPException(status_code=HTTP_NOT_FOUND, detail="Unknown service") from exc
         account = _latest_account_for_service(app_state.db, enum_service)
         if not account:
-            raise HTTPException(status_code=404, detail="No account stored for this service.")
+            raise HTTPException(status_code=HTTP_NOT_FOUND, detail="No account stored for this service.")
         credentials = app_state.db.get_credentials(int(account["id"]))
         if not credentials:
-            raise HTTPException(status_code=400, detail="Credentials are missing.")
+            raise HTTPException(status_code=HTTP_BAD_REQUEST, detail="Credentials are missing.")
         adapter = app_state.registry.create(
             service=enum_service,
             account_id=int(account["id"]),
@@ -698,10 +798,7 @@ def _register_job_creation_route(app: FastAPI, app_state: AppState) -> None:
         target_account_id = _form_int(form["target_account_id"], "target account")
         collection_kinds = [str(value) for value in form.getlist("collection_kinds")]
         if source_account_id == target_account_id:
-            return RedirectResponse(
-                "/sync/new?error=Source and target must be different accounts.",
-                status_code=303,
-            )
+            return _redirect("/sync/new?error=Source and target must be different accounts.")
         if not collection_kinds:
             collection_kinds = [kind.value for kind in CollectionKind]
         job_id = app_state.db.create_job(source_account_id, target_account_id, collection_kinds)
@@ -714,15 +811,13 @@ def _register_job_creation_route(app: FastAPI, app_state: AppState) -> None:
                 phase="draft",
                 last_error=str(exc),
             )
-        return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+        return _job_redirect(job_id)
 
 
 def _register_job_detail_route(app: FastAPI, app_state: AppState) -> None:
     @app.get("/jobs/{job_id}", response_class=HTMLResponse)
     def job_detail(job_id: int, request: Request) -> HTMLResponse:
-        job = app_state.db.get_job(job_id)
-        if not job:
-            raise HTTPException(status_code=404, detail="Job not found.")
+        job = _require_job(app_state, job_id)
         source = app_state.db.get_account(int(job["source_account_id"]))
         target = app_state.db.get_account(int(job["target_account_id"]))
         events = app_state.db.list_events(job_id)
@@ -740,44 +835,28 @@ def _register_job_detail_route(app: FastAPI, app_state: AppState) -> None:
 def _register_job_control_routes(app: FastAPI, app_state: AppState) -> None:
     @app.post("/api/jobs/{job_id}/resume")
     async def resume_job(job_id: int) -> RedirectResponse:
-        if not app_state.db.get_job(job_id):
-            raise HTTPException(status_code=404, detail="Job not found.")
+        _require_job(app_state, job_id)
         try:
             app_state.runner.start(job_id)
-            message = f"Resuming job #{job_id}."
-            return RedirectResponse(
-                f"/jobs/{job_id}?message={quote_plus(message)}",
-                status_code=303,
-            )
+            return _job_redirect(job_id, message=f"Resuming job #{job_id}.")
         except RuntimeError as exc:
-            return RedirectResponse(
-                f"/jobs/{job_id}?error={quote_plus(str(exc))}",
-                status_code=303,
-            )
+            return _job_redirect(job_id, error=str(exc))
 
     @app.post("/api/jobs/{job_id}/cancel")
     async def cancel_job(job_id: int) -> RedirectResponse:
-        if not app_state.db.get_job(job_id):
-            raise HTTPException(status_code=404, detail="Job not found.")
+        _require_job(app_state, job_id)
         app_state.runner.cancel(job_id)
-        return RedirectResponse(
-            f"/jobs/{job_id}?message={quote_plus(f'Cancel requested for job #{job_id}.')}",
-            status_code=303,
-        )
+        return _job_redirect(job_id, message=f"Cancel requested for job #{job_id}.")
 
 
 def _register_job_api_routes(app: FastAPI, app_state: AppState) -> None:
     @app.get("/api/jobs/{job_id}")
     def get_job(job_id: int) -> JSONResponse:
-        job = app_state.db.get_job(job_id)
-        if not job:
-            raise HTTPException(status_code=404, detail="Job not found.")
-        return JSONResponse(job)
+        return JSONResponse(_require_job(app_state, job_id))
 
     @app.get("/api/jobs/{job_id}/events")
     async def stream_events(request: Request, job_id: int) -> StreamingResponse:
-        if not app_state.db.get_job(job_id):
-            raise HTTPException(status_code=404, detail="Job not found.")
+        _require_job(app_state, job_id)
 
         async def event_stream() -> AsyncIterator[str]:
             last_id = 0

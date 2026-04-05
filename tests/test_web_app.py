@@ -1,6 +1,7 @@
 """Tests for the FastAPI web application flows."""
 
 from typing import ClassVar
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 import requests
@@ -16,6 +17,11 @@ from tests.fakes import FakeSpotifyAdapter, FakeYouTubeMusicAdapter
 HTTP_OK = int(requests.codes["ok"])
 HTTP_SEE_OTHER = int(requests.codes["see_other"])
 HTTP_NOT_FOUND = int(requests.codes["not_found"])
+
+
+def _redirect_query_value(location: str, key: str) -> str | None:
+    values = parse_qs(urlparse(location).query).get(key)
+    return values[0] if values else None
 
 
 def test_web_app_renders_pages_and_creates_job(app_state: AppState) -> None:
@@ -146,6 +152,22 @@ def test_web_app_can_save_and_validate_ytmusic_connection(app_state: AppState) -
     assert "/connections?error=" in invalid.headers["location"]
 
 
+def test_web_app_requires_ytmusic_headers_json_for_manual_connection(app_state: AppState) -> None:
+    """Test that the manual YouTube Music flow rejects blank headers JSON."""
+    client = TestClient(create_app(app_state))
+
+    response = client.post(
+        "/api/connections/ytmusic",
+        data={"headers_json": "   "},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == HTTP_SEE_OTHER
+    assert _redirect_query_value(response.headers["location"], "error") == (
+        "Paste browser headers JSON, or use Connect YouTube Music above."
+    )
+
+
 def test_web_app_can_start_and_complete_ytmusic_oauth_connection(
     app_state: AppState,
     monkeypatch: pytest.MonkeyPatch,
@@ -224,6 +246,22 @@ def test_web_app_can_start_and_complete_ytmusic_oauth_connection(
     assert credentials["credential_type"] == CredentialType.YTMUSIC_OAUTH.value
     assert credentials["payload"]["data"]["refresh_token"] == "oauth-refresh-token"
     assert credentials["payload"]["oauth_client"]["client_id"] == "google-client-id"
+
+
+def test_web_app_requires_ytmusic_oauth_client_credentials(app_state: AppState) -> None:
+    """Test that the YouTube Music OAuth flow rejects blank client credentials."""
+    client = TestClient(create_app(app_state))
+
+    response = client.post(
+        "/api/connections/ytmusic/oauth/start",
+        data={"client_id": " ", "client_secret": " "},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == HTTP_SEE_OTHER
+    assert _redirect_query_value(response.headers["location"], "error") == (
+        "Provide a Google OAuth client ID and secret for YouTube Music."
+    )
 
 
 def test_web_app_keeps_ytmusic_oauth_pending_and_slows_polling_interval(
@@ -362,6 +400,18 @@ def test_web_app_handles_spotify_connect_callback_and_event_stream(
 
     assert client.get(f"/api/jobs/{job_id}").status_code == HTTP_OK
     assert client.get("/api/jobs/999999").status_code == HTTP_NOT_FOUND
+
+
+def test_web_app_preserves_spotify_callback_validation_errors(app_state: AppState) -> None:
+    """Test that Spotify callback validation errors are redirected without extra wrapping."""
+    client = TestClient(create_app(app_state))
+
+    response = client.get("/callback/spotify?code=oauth-code", follow_redirects=False)
+
+    assert response.status_code == HTTP_SEE_OTHER
+    assert _redirect_query_value(response.headers["location"], "error") == (
+        "Spotify callback is missing code or state."
+    )
 
 
 def test_app_startup_can_auto_resume_jobs(
