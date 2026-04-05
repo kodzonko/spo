@@ -1,18 +1,18 @@
+"""Runtime configuration for the local `spo` app."""
+
 from __future__ import annotations
 
-import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-from platformdirs import user_data_dir
-
-APP_NAME = "spo"
-APP_AUTHOR = "spo"
+APP_DATA_DIRNAME = ".spo-data"
 
 
 @dataclass(slots=True)
 class Settings:
+    """Resolved application settings and derived storage paths."""
+
     bind_host: str
     bind_port: int
     log_level: str
@@ -21,21 +21,30 @@ class Settings:
 
     @property
     def db_path(self) -> Path:
+        """Return the SQLite database path."""
         return self.app_data_dir / "state.db"
 
     @property
     def log_path(self) -> Path:
+        """Return the application log path."""
         return self.app_data_dir / "app.log"
 
     @property
     def settings_path(self) -> Path:
+        """Return the optional settings file path."""
         return self.app_data_dir / "settings.toml"
 
 
+def _repo_root() -> Path:
+    current = Path(__file__).resolve()
+    for candidate in current.parents:
+        if (candidate / "pyproject.toml").exists():
+            return candidate
+    return current.parents[2]
+
+
 def _default_app_data_dir() -> Path:
-    return Path(
-        os.getenv("SPO_DATA_DIR", user_data_dir(APP_NAME, APP_AUTHOR, roaming=True))
-    )
+    return _repo_root() / APP_DATA_DIRNAME
 
 
 def _coerce_int(value: object, default: int) -> int:
@@ -52,6 +61,7 @@ def _coerce_int(value: object, default: int) -> int:
 
 
 def load_settings() -> Settings:
+    """Load non-secret settings from the repo-local app data directory."""
     app_data_dir = _default_app_data_dir()
     config_data: dict[str, object] = {}
     settings_path = app_data_dir / "settings.toml"
@@ -60,9 +70,6 @@ def load_settings() -> Settings:
         with settings_path.open("rb") as handle:
             config_data = tomllib.load(handle)
 
-    app_data_dir = Path(
-        str(config_data.get("app_data_dir", os.getenv("SPO_DATA_DIR", app_data_dir)))
-    )
     app_data_dir.mkdir(parents=True, exist_ok=True)
 
     return Settings(

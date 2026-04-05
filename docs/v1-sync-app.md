@@ -13,9 +13,9 @@
 - Server: FastAPI with REST endpoints and HTMX fragment responses.
 - Live progress: Server-Sent Events for job updates. Do not use WebSockets.
 - Runner: in-process background worker thread. Allow only one active job per target account and one active job per app process.
-- Storage: use a platform app-data directory via `platformdirs`, with `state.db`, `app.log`, and optionally `settings.toml` for non-secret bootstrap settings only.
+- Storage: use a fixed repo-local app-data directory at `./.spo-data/`, with `state.db`, `app.log`, and optionally `settings.toml` for non-secret bootstrap settings only.
 - Credentials and tokens: store Spotify client secret, Spotify OAuth tokens, and YouTube auth material in SQLite because they are mutable app-managed state. Do not use OS keyring and do not store credentials in `config.ini`.
-- Security model: v1 accepts plaintext-at-rest secrets inside the per-user app-data directory. Apply best-effort restrictive file permissions when creating the app-data directory and database, but do not implement platform-specific keychain or ACL logic.
+- Security model: v1 accepts plaintext-at-rest secrets inside the repo-local app-data directory. Apply best-effort restrictive file permissions when creating the app-data directory and database, but do not implement platform-specific keychain or ACL logic.
 - Modules: `web`, `sync`, `services`, `persistence`, `matching`.
 - Service abstraction: `StreamingServiceAdapter` with concrete `SpotifyAdapter`, `YouTubeMusicAdapter`, and future `AppleMusicAdapter`.
 
@@ -33,7 +33,7 @@
 - Spotify uses per-user developer app credentials only. The UI collects `client_id`, `client_secret`, and optional redirect URI, then runs local OAuth.
 - Default Spotify redirect: `http://127.0.0.1:8899/callback/spotify`.
 - YouTube Music auth uses browser-header import as the primary flow. Optional import of a pre-generated OAuth JSON is allowed, but v1 does not build Google OAuth client registration into the UI.
-- If a settings file exists, it may contain only non-secret bootstrap options such as bind host, bind port, log level, and app-data override path. Service credentials must stay in SQLite.
+- If a settings file exists, it may contain only non-secret bootstrap options such as bind host, bind port, log level, and `auto_resume`. Service credentials must stay in SQLite.
 - Apple Music shows as “planned” and disabled in the UI. Keep DB and interface compatibility, but no active Apple jobs in v1.
 
 ## Sync Semantics

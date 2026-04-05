@@ -9,6 +9,7 @@ wheels/
 
 # Virtual environments
 .venv/
+.spo-data/
 
 # IDEs
 .vscode/
