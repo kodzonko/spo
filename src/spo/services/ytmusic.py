@@ -132,7 +132,8 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
             else:
                 raise AuthenticationError("Unsupported YouTube Music credential type.")
         except Exception as exc:  # pragma: no cover - library internals
-            raise AuthenticationError(f"YouTube Music authentication failed: {exc}") from exc
+            message = f"YouTube Music authentication failed: {exc}"
+            raise AuthenticationError(message) from exc
         return self._client
 
     def _call(self, fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
@@ -198,7 +199,8 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
             payload = self._call(client.get_saved_episodes, limit=5000)
             items = payload.get("items", []) if isinstance(payload, dict) else []
             return self._slice(items, cursor, page_size)
-        raise ValueError(f"Unsupported YouTube Music collection: {kind}")
+        message = f"Unsupported YouTube Music collection: {kind}"
+        raise ValueError(message)
 
     def get_playlist_items(self, playlist_id: str, cursor: str | None = None, page_size: int = 100) -> Page:
         """Return a page of items from a YouTube Music playlist."""

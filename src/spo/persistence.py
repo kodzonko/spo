@@ -73,7 +73,8 @@ def _validate_update_fields(fields: dict[str, object], allowed_fields: frozenset
     unexpected = sorted(set(fields).difference(allowed_fields))
     if unexpected:
         joined = ", ".join(unexpected)
-        raise ValueError(f"Unsupported {entity} update fields: {joined}")
+        message = f"Unsupported {entity} update fields: {joined}"
+        raise ValueError(message)
 
 
 class Database:
@@ -485,7 +486,8 @@ class Database:
     def increment_job_counter(self, job_id: int, column: str, amount: int = 1) -> None:
         """Increment a numeric progress counter on a job."""
         if column not in JOB_COUNTER_FIELDS:
-            raise ValueError(f"Unsupported job counter column: {column}")
+            message = f"Unsupported job counter column: {column}"
+            raise ValueError(message)
         query = f"""
             UPDATE jobs
             SET {column} = {column} + ?, updated_at = ?

@@ -173,9 +173,11 @@ def _start_ytmusic_oauth_flow(
     try:
         code = OAuthCredentials(client_id, client_secret).get_code()
     except (BadOAuthClient, UnauthorizedOAuthClient) as exc:
-        raise AuthenticationError(f"YouTube Music OAuth setup failed: {exc}") from exc
+        message = f"YouTube Music OAuth setup failed: {exc}"
+        raise AuthenticationError(message) from exc
     except Exception as exc:  # pragma: no cover - network and library internals
-        raise AuthenticationError(f"Could not start YouTube Music OAuth: {exc}") from exc
+        message = f"Could not start YouTube Music OAuth: {exc}"
+        raise AuthenticationError(message) from exc
 
     device_code = str(code.get("device_code") or "")
     user_code = str(code.get("user_code") or "")

@@ -61,7 +61,8 @@ class ServiceRegistry:
         """Create a configured adapter instance for the requested service."""
         factory = self._factories.get(service)
         if factory is None:
-            raise ValueError(f"No adapter registered for service {service.value}")
+            message = f"No adapter registered for service {service.value}"
+            raise ValueError(message)
         return factory(
             account_id=account_id,
             credential_payload=credential_payload,
@@ -78,7 +79,8 @@ def remote_item_id(raw: dict[str, Any]) -> str:
     feedback_token = raw.get("feedbackToken")
     if feedback_token:
         return str(feedback_token)
-    raise ValueError(f"Could not determine remote id from payload: {raw}")
+    message = f"Could not determine remote id from payload: {raw}"
+    raise ValueError(message)
 
 
 def playlist_child_kind(raw: dict[str, Any]) -> CollectionKind:
@@ -121,7 +123,8 @@ class SyncEngine:
         """Run a synchronization job until completion, pause, or failure."""
         job = self.db.get_job(job_id)
         if not job:
-            raise ValueError(f"Unknown job {job_id}")
+            message = f"Unknown job {job_id}"
+            raise ValueError(message)
 
         source_account = self.db.get_account(int(job["source_account_id"]))
         target_account = self.db.get_account(int(job["target_account_id"]))
@@ -781,7 +784,8 @@ class SyncEngine:
         if kind == CollectionKind.SAVED_EPISODE:
             target.save_episodes(item_ids)
             return
-        raise UnsupportedOperationError(f"Unhandled collection write for {kind.value}.")
+        message = f"Unhandled collection write for {kind.value}."
+        raise UnsupportedOperationError(message)
 
 
 class JobRunner:
@@ -802,7 +806,8 @@ class JobRunner:
             if self._thread and self._thread.is_alive():
                 if self._active_job_id == job_id:
                     return
-                raise RuntimeError(f"Job {self._active_job_id} is already running. Only one job can run at a time.")
+                message = f"Job {self._active_job_id} is already running. Only one job can run at a time."
+                raise RuntimeError(message)
             self._active_job_id = job_id
             self._cancelled.discard(job_id)
             self._thread = threading.Thread(

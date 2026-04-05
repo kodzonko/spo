@@ -229,7 +229,8 @@ class SpotifyAdapter(StreamingServiceAdapter):
             items = [item["episode"] for item in payload.get("items", []) if item.get("episode")]
             next_cursor = str(offset + page_size) if payload.get("next") else None
             return Page(items=items, next_cursor=next_cursor)
-        raise ValueError(f"Unsupported Spotify collection: {kind}")
+        message = f"Unsupported Spotify collection: {kind}"
+        raise ValueError(message)
 
     def get_playlist_items(self, playlist_id: str, cursor: str | None = None, page_size: int = 100) -> Page:
         """Return a page of tracks or episodes from a Spotify playlist."""
