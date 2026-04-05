@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Annotated, Any, NoReturn
 from urllib.parse import quote_plus
 
 import requests
-from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi import FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
@@ -615,7 +615,7 @@ def _register_ytmusic_oauth_routes(app: FastAPI, app_state: AppState) -> None:
             )
 
     @app.get("/connections/ytmusic/oauth/{flow_id}", response_class=HTMLResponse)
-    def ytmusic_oauth_page(flow_id: str, request: Request) -> HTMLResponse | RedirectResponse:
+    def ytmusic_oauth_page(flow_id: str, request: Request) -> Response:
         flow = _get_pending_ytmusic_oauth(app_state, flow_id)
         if flow is None:
             return RedirectResponse(

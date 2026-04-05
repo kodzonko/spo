@@ -4,7 +4,7 @@
 
 ## Requirements
 
-- Python `3.14`
+- Python `3.13`
 - Astral's [`uv`](https://docs.astral.sh/uv/)
 - A Spotify developer app for your own account
 - YouTube Music auth material in `ytmusicapi`-compatible headers JSON or OAuth JSON form

@@ -296,11 +296,12 @@ def test_web_app_handles_spotify_connect_callback_and_event_stream(
 
     def fake_exchange_code(
         *,
-        _settings: object,
+        settings: object,
         credential_payload: dict[str, object],
         code: str,
     ) -> dict[str, object]:
         assert code == "oauth-code"
+        assert settings is app_state.settings
         return {
             **credential_payload,
             "token_info": {
