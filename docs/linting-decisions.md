@@ -34,3 +34,10 @@ Option A was leaving comparison thresholds and HTTP status codes inline and sile
 Option B was keeping Ruff's magic-value rule enabled, moving domain thresholds to named module constants, and using `requests.codes` for HTTP status comparisons.
 
 This repository now uses option B because it makes matching heuristics explicit, keeps transport-layer status handling consistent across adapters and tests, and avoids weakening the lint rule globally.
+
+## Sync Complexity Refactors
+
+Option A was suppressing `C901` on orchestration methods like `_apply_playlists` once the control flow became branch-heavy.
+Option B was extracting per-playlist and per-item helper methods so the top-level sync method stays readable while the detailed branches remain explicit and testable.
+
+This repository now uses option B because it keeps the orchestration path easy to follow, avoids normalizing lint suppressions for core sync code, and makes it easier to cover playlist edge cases such as mixed item kinds.

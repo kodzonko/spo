@@ -6,6 +6,7 @@ import logging
 import threading
 import time
 from collections import Counter
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -34,6 +35,27 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 PLAYLIST_NAME_REUSE_THRESHOLD = 0.85
+PendingPlaylistItem = tuple[int, str, str, CollectionKind]
+
+
+@dataclass(slots=True)
+class PlaylistApplyContext:
+    """Shared dependencies for applying playlist changes."""
+
+    job_id: int
+    source: StreamingServiceAdapter
+    target: StreamingServiceAdapter
+    is_cancelled: Callable[[], bool]
+
+
+@dataclass(slots=True)
+class PlaylistBatchState:
+    """Mutable state while reconciling one playlist's contents."""
+
+    playlist_id: str
+    source_seen: Counter[str]
+    target_items_counter: Counter[str]
+    pending_items: list[PendingPlaylistItem]
 
 
 class ServiceRegistry:
@@ -538,131 +560,197 @@ class SyncEngine:
             return
 
         target_playlists, _ = self._build_existing_index(target, CollectionKind.PLAYLIST)
+        context = PlaylistApplyContext(
+            job_id=job_id,
+            source=source,
+            target=target,
+            is_cancelled=is_cancelled,
+        )
         for source_playlist in source_playlists:
-            if is_cancelled():
+            if self._apply_playlist(context, source_playlist, target_playlists):
                 return
-            playlist_work = CanonicalWork.from_dict(source_playlist["canonical"])
-            target_playlist = self._resolve_target_playlist(
-                source,
-                target,
-                playlist_work,
-                source_playlist["payload"],
-                target_playlists,
-            )
-            playlist_id = target_playlist["id"]
-            playlist_task_key = f"{job_id}:playlist:{source_playlist['id']}"
-            playlist_task, _ = self.db.create_or_update_task(
-                job_id=job_id,
-                dedupe_key=playlist_task_key,
-                action="ensure_playlist",
-                collection_kind=CollectionKind.PLAYLIST.value,
-                source_entity_id=int(source_playlist["id"]),
-                target_entity_id=playlist_id,
-                payload={"playlist_name": playlist_work.title},
-                state=TaskState.COMPLETED.value,
-            )
-            self.db.update_task(playlist_task, last_error=None)
+
+    def _apply_playlist(
+        self,
+        context: PlaylistApplyContext,
+        source_playlist: dict[str, Any],
+        target_playlists: list[dict[str, Any]],
+    ) -> bool:
+        if context.is_cancelled():
+            return True
+
+        playlist_work = CanonicalWork.from_dict(source_playlist["canonical"])
+        playlist_id = self._ensure_target_playlist_task(
+            context,
+            source_playlist,
+            playlist_work,
+            target_playlists,
+        )
+        batch_state = PlaylistBatchState(
+            playlist_id=playlist_id,
+            source_seen=Counter(),
+            target_items_counter=self._playlist_target_counter(context.target, playlist_id),
+            pending_items=[],
+        )
+        source_items = self.db.list_source_entities(context.job_id, parent_source_id=int(source_playlist["id"]))
+        for item in source_items:
+            if self._apply_playlist_item(context, batch_state, item):
+                return True
+
+        self._flush_pending_playlist_items(context, batch_state)
+        return False
+
+    def _ensure_target_playlist_task(
+        self,
+        context: PlaylistApplyContext,
+        source_playlist: dict[str, Any],
+        playlist_work: CanonicalWork,
+        target_playlists: list[dict[str, Any]],
+    ) -> str:
+        target_playlist = self._resolve_target_playlist(
+            context.source,
+            context.target,
+            playlist_work,
+            source_playlist["payload"],
+            target_playlists,
+        )
+        playlist_id = target_playlist["id"]
+        playlist_task_key = f"{context.job_id}:playlist:{source_playlist['id']}"
+        playlist_task, _ = self.db.create_or_update_task(
+            job_id=context.job_id,
+            dedupe_key=playlist_task_key,
+            action="ensure_playlist",
+            collection_kind=CollectionKind.PLAYLIST.value,
+            source_entity_id=int(source_playlist["id"]),
+            target_entity_id=playlist_id,
+            payload={"playlist_name": playlist_work.title},
+            state=TaskState.COMPLETED.value,
+        )
+        self.db.update_task(playlist_task, last_error=None)
+        self.db.upsert_mapping(
+            source_service=context.source.service.value,
+            target_service=context.target.service.value,
+            source_fingerprint=playlist_work.fingerprint,
+            target_id=playlist_id,
+            target_kind=CollectionKind.PLAYLIST.value,
+            confidence=1.0,
+            match_method="playlist_name",
+        )
+        return playlist_id
+
+    def _apply_playlist_item(
+        self,
+        context: PlaylistApplyContext,
+        batch_state: PlaylistBatchState,
+        item: dict[str, Any],
+    ) -> bool:
+        if context.is_cancelled():
+            return True
+
+        child_kind = CollectionKind(item["collection_kind"])
+        work = CanonicalWork.from_dict(item["canonical"])
+        batch_state.source_seen[work.fingerprint] += 1
+        task_key = f"{context.job_id}:playlist-item:{item['id']}"
+        existing_task = self.db.get_task_by_dedupe_key(task_key)
+        if existing_task and existing_task["state"] in {
+            TaskState.COMPLETED.value,
+            TaskState.SKIPPED.value,
+        }:
+            return False
+
+        if batch_state.target_items_counter[work.fingerprint] >= batch_state.source_seen[work.fingerprint]:
+            self._skip_existing_playlist_item(context, batch_state.playlist_id, item, child_kind, task_key)
+            return False
+
+        match = self._resolve_target_match(context.source, context.target, work, child_kind)
+        if not match.accepted or not match.candidate:
+            self._skip_unresolved_playlist_item(context, batch_state.playlist_id, item, task_key, work)
+            return False
+
+        matched_id = remote_item_id(match.candidate)
+        task_id, _ = self.db.create_or_update_task(
+            job_id=context.job_id,
+            dedupe_key=task_key,
+            action="add_playlist_item",
+            collection_kind=child_kind.value,
+            source_entity_id=int(item["id"]),
+            target_entity_id=batch_state.playlist_id,
+            payload={"matched_id": matched_id, "score": match.score},
+            state=TaskState.PENDING.value,
+        )
+        batch_state.pending_items.append((task_id, work.fingerprint, matched_id, child_kind))
+        batch_state.target_items_counter[work.fingerprint] += 1
+        return False
+
+    def _skip_existing_playlist_item(
+        self,
+        context: PlaylistApplyContext,
+        playlist_id: str,
+        item: dict[str, Any],
+        child_kind: CollectionKind,
+        task_key: str,
+    ) -> None:
+        self.db.create_or_update_task(
+            job_id=context.job_id,
+            dedupe_key=task_key,
+            action="add_playlist_item",
+            collection_kind=child_kind.value,
+            source_entity_id=int(item["id"]),
+            target_entity_id=playlist_id,
+            payload={"reason": "already_present"},
+            state=TaskState.SKIPPED.value,
+        )
+        self.db.increment_job_counter(context.job_id, "progress_skipped_count")
+
+    def _skip_unresolved_playlist_item(
+        self,
+        context: PlaylistApplyContext,
+        playlist_id: str,
+        item: dict[str, Any],
+        task_key: str,
+        work: CanonicalWork,
+    ) -> None:
+        child_kind = CollectionKind(item["collection_kind"])
+        self.db.create_or_update_task(
+            job_id=context.job_id,
+            dedupe_key=task_key,
+            action="add_playlist_item",
+            collection_kind=child_kind.value,
+            source_entity_id=int(item["id"]),
+            target_entity_id=playlist_id,
+            payload={"reason": "unresolved"},
+            state=TaskState.SKIPPED.value,
+            last_error="No acceptable target candidate found.",
+        )
+        self.db.increment_job_counter(context.job_id, "progress_skipped_count")
+        self.db.append_event(
+            context.job_id,
+            "warning",
+            f"Skipped playlist item {work.title} because no acceptable match was found.",
+        )
+
+    def _flush_pending_playlist_items(
+        self,
+        context: PlaylistApplyContext,
+        batch_state: PlaylistBatchState,
+    ) -> None:
+        if not batch_state.pending_items:
+            return
+
+        pending_item_ids = [matched_id for _, _, matched_id, _ in batch_state.pending_items]
+        context.target.add_playlist_items(batch_state.playlist_id, pending_item_ids)
+        for task_id, fingerprint, matched_id, child_kind in batch_state.pending_items:
+            self.db.update_task(task_id, state=TaskState.COMPLETED.value, last_error=None)
+            self.db.increment_job_counter(context.job_id, "progress_applied_count")
             self.db.upsert_mapping(
-                source_service=source.service.value,
-                target_service=target.service.value,
-                source_fingerprint=playlist_work.fingerprint,
-                target_id=playlist_id,
-                target_kind=CollectionKind.PLAYLIST.value,
+                source_service=context.source.service.value,
+                target_service=context.target.service.value,
+                source_fingerprint=fingerprint,
+                target_id=matched_id,
+                target_kind=child_kind.value,
                 confidence=1.0,
-                match_method="playlist_name",
+                match_method="playlist_item",
             )
-
-            target_items_counter = self._playlist_target_counter(target, playlist_id)
-            source_seen: Counter[str] = Counter()
-            pending_item_ids: list[str] = []
-            pending_task_ids: list[int] = []
-            pending_fingerprints: list[str] = []
-
-            source_items = self.db.list_source_entities(job_id, parent_source_id=int(source_playlist["id"]))
-            for item in source_items:
-                if is_cancelled():
-                    return
-                child_kind = CollectionKind(item["collection_kind"])
-                work = CanonicalWork.from_dict(item["canonical"])
-                source_seen[work.fingerprint] += 1
-                task_key = f"{job_id}:playlist-item:{item['id']}"
-                existing_task = self.db.get_task_by_dedupe_key(task_key)
-                if existing_task and existing_task["state"] in {
-                    TaskState.COMPLETED.value,
-                    TaskState.SKIPPED.value,
-                }:
-                    continue
-
-                if target_items_counter[work.fingerprint] >= source_seen[work.fingerprint]:
-                    self.db.create_or_update_task(
-                        job_id=job_id,
-                        dedupe_key=task_key,
-                        action="add_playlist_item",
-                        collection_kind=child_kind.value,
-                        source_entity_id=int(item["id"]),
-                        target_entity_id=playlist_id,
-                        payload={"reason": "already_present"},
-                        state=TaskState.SKIPPED.value,
-                    )
-                    self.db.increment_job_counter(job_id, "progress_skipped_count")
-                    continue
-
-                match = self._resolve_target_match(source, target, work, child_kind)
-                if not match.accepted or not match.candidate:
-                    self.db.create_or_update_task(
-                        job_id=job_id,
-                        dedupe_key=task_key,
-                        action="add_playlist_item",
-                        collection_kind=child_kind.value,
-                        source_entity_id=int(item["id"]),
-                        target_entity_id=playlist_id,
-                        payload={"reason": "unresolved"},
-                        state=TaskState.SKIPPED.value,
-                        last_error="No acceptable target candidate found.",
-                    )
-                    self.db.increment_job_counter(job_id, "progress_skipped_count")
-                    self.db.append_event(
-                        job_id,
-                        "warning",
-                        f"Skipped playlist item {work.title} because no acceptable match was found.",
-                    )
-                    continue
-
-                matched_id = remote_item_id(match.candidate)
-                task_id, _ = self.db.create_or_update_task(
-                    job_id=job_id,
-                    dedupe_key=task_key,
-                    action="add_playlist_item",
-                    collection_kind=child_kind.value,
-                    source_entity_id=int(item["id"]),
-                    target_entity_id=playlist_id,
-                    payload={"matched_id": matched_id, "score": match.score},
-                    state=TaskState.PENDING.value,
-                )
-                pending_item_ids.append(matched_id)
-                pending_task_ids.append(task_id)
-                pending_fingerprints.append(work.fingerprint)
-                target_items_counter[work.fingerprint] += 1
-
-            if pending_item_ids:
-                target.add_playlist_items(playlist_id, pending_item_ids)
-                for task_id, fingerprint, matched_id in zip(
-                    pending_task_ids,
-                    pending_fingerprints,
-                    pending_item_ids,
-                    strict=False,
-                ):
-                    self.db.update_task(task_id, state=TaskState.COMPLETED.value, last_error=None)
-                    self.db.increment_job_counter(job_id, "progress_applied_count")
-                    self.db.upsert_mapping(
-                        source_service=source.service.value,
-                        target_service=target.service.value,
-                        source_fingerprint=fingerprint,
-                        target_id=matched_id,
-                        target_kind=child_kind.value,
-                        confidence=1.0,
-                        match_method="playlist_item",
-                    )
 
     def _playlist_target_counter(self, target: StreamingServiceAdapter, playlist_id: str) -> Counter[str]:
         counter: Counter[str] = Counter()

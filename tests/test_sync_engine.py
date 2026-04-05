@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from spo.exceptions import RateLimitError
-from spo.models import CollectionKind, CredentialType, JobStatus, Service
+from spo.models import CanonicalWork, CollectionKind, CredentialType, JobStatus, Service
 from spo.utils import utcnow
 from tests.fakes import FakeSpotifyAdapter, FakeYouTubeMusicAdapter
 
@@ -280,6 +280,149 @@ def test_playlist_sync_merges_into_existing_playlist_and_preserves_target_only_i
     assert target_state.get("created_playlists", []) == []
     assert target_state["playlist_add_calls"] == [("yt-playlist-1", ["yt-track-1", "yt-track-2"])]
     assert len(target_state["playlist_items"]["yt-playlist-1"]) == EXPECTED_PLAYLIST_ITEM_COUNT
+
+
+def test_playlist_sync_stores_mappings_by_item_kind(app_state: AppState) -> None:
+    """Test that playlist item mappings retain each child's target kind."""
+    source_state = {
+        "identity": {
+            "remote_account_id": "spotify-src",
+            "display_name": "Source Spotify",
+        },
+        "collections": {
+            CollectionKind.PLAYLIST.value: [
+                {
+                    "id": "sp-playlist-1",
+                    "name": "Mixed Queue",
+                    "description": "Tracks and episodes",
+                },
+            ],
+        },
+        "playlist_items": {
+            "sp-playlist-1": [
+                {
+                    "id": "sp-track-10",
+                    "name": "Signal Boost",
+                    "artists": [{"name": "Artist Ten"}],
+                    "album": {"name": "Album Ten"},
+                    "duration_ms": 210000,
+                },
+                {
+                    "id": "sp-episode-1",
+                    "name": "Deep Dive",
+                    "author": "Host One",
+                    "show": {"name": "Tech Talks"},
+                    "duration_ms": 1800000,
+                    "type": "episode",
+                },
+            ],
+        },
+        "search": {},
+        "catalog": {},
+    }
+    target_state = {
+        "identity": {
+            "remote_account_id": "yt-target",
+            "display_name": "Target YT Music",
+        },
+        "collections": {},
+        "playlist_items": {},
+        "search": {
+            CollectionKind.SAVED_TRACK.value: [
+                {
+                    "videoId": "yt-track-10",
+                    "title": "Signal Boost",
+                    "artists": [{"name": "Artist Ten"}],
+                    "album": {"name": "Album Ten"},
+                    "duration": "3:30",
+                },
+            ],
+            CollectionKind.SAVED_EPISODE.value: [
+                {
+                    "videoId": "yt-episode-1",
+                    "title": "Deep Dive",
+                    "author": "Host One",
+                    "show": {"name": "Tech Talks"},
+                    "duration": "30:00",
+                    "videoType": "MUSIC_VIDEO_TYPE_PODCAST_EPISODE",
+                },
+            ],
+        },
+        "catalog": {
+            CollectionKind.SAVED_TRACK.value: {
+                "yt-track-10": {
+                    "videoId": "yt-track-10",
+                    "title": "Signal Boost",
+                    "artists": [{"name": "Artist Ten"}],
+                    "album": {"name": "Album Ten"},
+                    "duration": "3:30",
+                },
+            },
+            CollectionKind.SAVED_EPISODE.value: {
+                "yt-episode-1": {
+                    "videoId": "yt-episode-1",
+                    "title": "Deep Dive",
+                    "author": "Host One",
+                    "show": {"name": "Tech Talks"},
+                    "duration": "30:00",
+                    "videoType": "MUSIC_VIDEO_TYPE_PODCAST_EPISODE",
+                },
+            },
+        },
+    }
+    FakeSpotifyAdapter.STATE["source"] = source_state
+    FakeYouTubeMusicAdapter.STATE["target"] = target_state
+
+    source_account_id = app_state.db.upsert_account(
+        service=Service.SPOTIFY.value,
+        auth_status="connected",
+        remote_account_id="spotify-src",
+        display_name="Source Spotify",
+    )
+    target_account_id = app_state.db.upsert_account(
+        service=Service.YTMUSIC.value,
+        auth_status="connected",
+        remote_account_id="yt-target",
+        display_name="Target YT Music",
+    )
+    app_state.db.save_credentials(
+        source_account_id,
+        CredentialType.SPOTIFY_OAUTH.value,
+        {"state_key": "source"},
+    )
+    app_state.db.save_credentials(
+        target_account_id,
+        CredentialType.YTMUSIC_HEADERS.value,
+        {"state_key": "target"},
+    )
+    job_id = app_state.db.create_job(
+        source_account_id,
+        target_account_id,
+        [CollectionKind.PLAYLIST.value],
+    )
+
+    app_state.runner.start(job_id)
+    app_state.runner.wait()
+
+    source_playlist = app_state.db.list_source_entities(job_id, collection_kind=CollectionKind.PLAYLIST.value)[0]
+    source_items = app_state.db.list_source_entities(job_id, parent_source_id=int(source_playlist["id"]))
+    mappings_by_kind = {
+        item["collection_kind"]: app_state.db.find_mapping(
+            source_service=Service.SPOTIFY.value,
+            target_service=Service.YTMUSIC.value,
+            source_fingerprint=CanonicalWork.from_dict(item["canonical"]).fingerprint,
+            target_kind=item["collection_kind"],
+        )
+        for item in source_items
+    }
+    track_mapping = mappings_by_kind[CollectionKind.SAVED_TRACK.value]
+    episode_mapping = mappings_by_kind[CollectionKind.SAVED_EPISODE.value]
+
+    assert target_state["playlist_add_calls"] == [("target-playlist-1", ["yt-track-10", "yt-episode-1"])]
+    assert track_mapping is not None
+    assert track_mapping["target_id"] == "yt-track-10"
+    assert episode_mapping is not None
+    assert episode_mapping["target_id"] == "yt-episode-1"
 
 
 def test_rate_limited_job_pauses_then_auto_resumes(app_state: AppState) -> None:
