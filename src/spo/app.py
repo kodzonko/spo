@@ -501,13 +501,13 @@ def _poll_ytmusic_oauth_token(
         )
 
 
-def _complete_ytmusic_oauth(
+def _pending_oauth_error_response(
     app_state: AppState,
     flow_id: str,
     flow: PendingYouTubeMusicOAuth,
-    token_response: RefreshableTokenDict,
-) -> JSONResponse:
-    error_code = token_response.get("error")
+    error_code: str | None,
+) -> JSONResponse | None:
+    """Translate OAuth polling errors into API responses when applicable."""
     if error_code == "authorization_pending":
         return _oauth_status_response("pending", interval_seconds=flow.interval_seconds)
     if error_code == "slow_down":
@@ -522,19 +522,20 @@ def _complete_ytmusic_oauth(
             message=message,
             redirect_url=_connections_redirect_url(message, error=True),
         )
-    if not token_response.get("access_token") or not token_response.get("refresh_token"):
-        return _oauth_status_response(
-            "error",
-            status_code=HTTP_BAD_GATEWAY,
-            message="YouTube Music OAuth did not return usable tokens.",
-        )
+    return None
 
+
+def _build_ytmusic_oauth_payload(
+    flow: PendingYouTubeMusicOAuth,
+    token_response: RefreshableTokenDict,
+) -> dict[str, object]:
+    """Build persisted OAuth payload from the device-flow token response."""
     expires_in = int(token_response.get("expires_in") or 0)
     persisted_token = {
         **token_response,
         "expires_at": int(time.time()) + expires_in,
     }
-    payload = {
+    return {
         "credential_type": CredentialType.YTMUSIC_OAUTH.value,
         "data": persisted_token,
         "oauth_client": {
@@ -542,6 +543,30 @@ def _complete_ytmusic_oauth(
             "client_secret": flow.client_secret,
         },
     }
+
+
+def _complete_ytmusic_oauth(
+    app_state: AppState,
+    flow_id: str,
+    flow: PendingYouTubeMusicOAuth,
+    token_response: RefreshableTokenDict,
+) -> JSONResponse:
+    pending_error = _pending_oauth_error_response(
+        app_state,
+        flow_id,
+        flow,
+        token_response.get("error"),
+    )
+    if pending_error is not None:
+        return pending_error
+    if not token_response.get("access_token") or not token_response.get("refresh_token"):
+        return _oauth_status_response(
+            "error",
+            status_code=HTTP_BAD_GATEWAY,
+            message="YouTube Music OAuth did not return usable tokens.",
+        )
+
+    payload = _build_ytmusic_oauth_payload(flow, token_response)
     try:
         adapter = app_state.registry.create(
             service=Service.YTMUSIC,
@@ -849,6 +874,26 @@ def _register_job_control_routes(app: FastAPI, app_state: AppState) -> None:
         return _job_redirect(job_id, message=f"Cancel requested for job #{job_id}.")
 
 
+async def _stream_job_events(
+    request: Request,
+    app_state: AppState,
+    job_id: int,
+) -> AsyncIterator[str]:
+    """Yield server-sent events for a job until the client disconnects."""
+    last_id = 0
+    while True:
+        if await request.is_disconnected():
+            break
+        events = app_state.db.list_events(job_id, after_id=last_id)
+        if events:
+            for event in events:
+                last_id = max(last_id, int(event["id"]))
+                yield f"data: {json.dumps(event)}\n\n"
+        else:
+            yield ": keepalive\n\n"
+        await asyncio.sleep(1)
+
+
 def _register_job_api_routes(app: FastAPI, app_state: AppState) -> None:
     @app.get("/api/jobs/{job_id}")
     def get_job(job_id: int) -> JSONResponse:
@@ -857,22 +902,10 @@ def _register_job_api_routes(app: FastAPI, app_state: AppState) -> None:
     @app.get("/api/jobs/{job_id}/events")
     async def stream_events(request: Request, job_id: int) -> StreamingResponse:
         _require_job(app_state, job_id)
-
-        async def event_stream() -> AsyncIterator[str]:
-            last_id = 0
-            while True:
-                if await request.is_disconnected():
-                    break
-                events = app_state.db.list_events(job_id, after_id=last_id)
-                if events:
-                    for event in events:
-                        last_id = max(last_id, int(event["id"]))
-                        yield f"data: {json.dumps(event)}\n\n"
-                else:
-                    yield ": keepalive\n\n"
-                await asyncio.sleep(1)
-
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
+        return StreamingResponse(
+            _stream_job_events(request, app_state, job_id),
+            media_type="text/event-stream",
+        )
 
 
 def create_app(state: AppState | None = None) -> FastAPI:
