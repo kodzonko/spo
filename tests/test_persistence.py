@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Tests for the SQLite persistence layer."""
+
+from __future__ import annotations
 
 from typing import TYPE_CHECKING
 

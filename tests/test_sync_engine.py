@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Tests for synchronization engine behavior."""
+
+from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
