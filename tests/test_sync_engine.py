@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from spo.exceptions import RateLimitError
 from spo.models import CanonicalWork, CollectionKind, CredentialType, JobStatus, Service
+from spo.persistence import AccountUpsert
 from spo.utils import utcnow
 from tests.fakes import FakeSpotifyAdapter, FakeYouTubeMusicAdapter
 
@@ -95,16 +96,20 @@ def test_sync_engine_skips_existing_items_and_resumes_without_duplicates(app_sta
     FakeYouTubeMusicAdapter.STATE["target"] = target_state
 
     source_account_id = app_state.db.upsert_account(
-        service=Service.SPOTIFY.value,
-        auth_status="connected",
-        remote_account_id="spotify-src",
-        display_name="Source Spotify",
+        AccountUpsert(
+            service=Service.SPOTIFY.value,
+            auth_status="connected",
+            remote_account_id="spotify-src",
+            display_name="Source Spotify",
+        ),
     )
     target_account_id = app_state.db.upsert_account(
-        service=Service.YTMUSIC.value,
-        auth_status="connected",
-        remote_account_id="yt-target",
-        display_name="Target YT Music",
+        AccountUpsert(
+            service=Service.YTMUSIC.value,
+            auth_status="connected",
+            remote_account_id="yt-target",
+            display_name="Target YT Music",
+        ),
     )
     app_state.db.save_credentials(
         source_account_id,
@@ -244,16 +249,20 @@ def test_playlist_sync_merges_into_existing_playlist_and_preserves_target_only_i
     FakeYouTubeMusicAdapter.STATE["target"] = target_state
 
     source_account_id = app_state.db.upsert_account(
-        service=Service.SPOTIFY.value,
-        auth_status="connected",
-        remote_account_id="spotify-src",
-        display_name="Source Spotify",
+        AccountUpsert(
+            service=Service.SPOTIFY.value,
+            auth_status="connected",
+            remote_account_id="spotify-src",
+            display_name="Source Spotify",
+        ),
     )
     target_account_id = app_state.db.upsert_account(
-        service=Service.YTMUSIC.value,
-        auth_status="connected",
-        remote_account_id="yt-target",
-        display_name="Target YT Music",
+        AccountUpsert(
+            service=Service.YTMUSIC.value,
+            auth_status="connected",
+            remote_account_id="yt-target",
+            display_name="Target YT Music",
+        ),
     )
     app_state.db.save_credentials(
         source_account_id,
@@ -374,16 +383,20 @@ def test_playlist_sync_stores_mappings_by_item_kind(app_state: AppState) -> None
     FakeYouTubeMusicAdapter.STATE["target"] = target_state
 
     source_account_id = app_state.db.upsert_account(
-        service=Service.SPOTIFY.value,
-        auth_status="connected",
-        remote_account_id="spotify-src",
-        display_name="Source Spotify",
+        AccountUpsert(
+            service=Service.SPOTIFY.value,
+            auth_status="connected",
+            remote_account_id="spotify-src",
+            display_name="Source Spotify",
+        ),
     )
     target_account_id = app_state.db.upsert_account(
-        service=Service.YTMUSIC.value,
-        auth_status="connected",
-        remote_account_id="yt-target",
-        display_name="Target YT Music",
+        AccountUpsert(
+            service=Service.YTMUSIC.value,
+            auth_status="connected",
+            remote_account_id="yt-target",
+            display_name="Target YT Music",
+        ),
     )
     app_state.db.save_credentials(
         source_account_id,
@@ -482,16 +495,20 @@ def test_rate_limited_job_pauses_then_auto_resumes(app_state: AppState) -> None:
     FakeYouTubeMusicAdapter.STATE["target"] = target_state
 
     source_account_id = app_state.db.upsert_account(
-        service=Service.SPOTIFY.value,
-        auth_status="connected",
-        remote_account_id="spotify-src",
-        display_name="Source Spotify",
+        AccountUpsert(
+            service=Service.SPOTIFY.value,
+            auth_status="connected",
+            remote_account_id="spotify-src",
+            display_name="Source Spotify",
+        ),
     )
     target_account_id = app_state.db.upsert_account(
-        service=Service.YTMUSIC.value,
-        auth_status="connected",
-        remote_account_id="yt-target",
-        display_name="Target YT Music",
+        AccountUpsert(
+            service=Service.YTMUSIC.value,
+            auth_status="connected",
+            remote_account_id="yt-target",
+            display_name="Target YT Music",
+        ),
     )
     app_state.db.save_credentials(
         source_account_id,
@@ -531,16 +548,20 @@ def test_rate_limited_job_pauses_then_auto_resumes(app_state: AppState) -> None:
 def test_sync_engine_pauses_when_credentials_are_missing(app_state: AppState) -> None:
     """Test that jobs pause for authentication before creating adapters."""
     source_account_id = app_state.db.upsert_account(
-        service=Service.SPOTIFY.value,
-        auth_status="connected",
-        remote_account_id="spotify-src",
-        display_name="Source Spotify",
+        AccountUpsert(
+            service=Service.SPOTIFY.value,
+            auth_status="connected",
+            remote_account_id="spotify-src",
+            display_name="Source Spotify",
+        ),
     )
     target_account_id = app_state.db.upsert_account(
-        service=Service.YTMUSIC.value,
-        auth_status="connected",
-        remote_account_id="yt-target",
-        display_name="Target YT Music",
+        AccountUpsert(
+            service=Service.YTMUSIC.value,
+            auth_status="connected",
+            remote_account_id="yt-target",
+            display_name="Target YT Music",
+        ),
     )
     app_state.db.save_credentials(
         source_account_id,

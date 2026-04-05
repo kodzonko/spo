@@ -23,7 +23,7 @@ from spo.matching import (
     playlist_name_match_score,
 )
 from spo.models import AccountIdentity, CanonicalWork, CollectionKind, JobStatus, Service, TaskState
-from spo.persistence import TaskUpsert
+from spo.persistence import AccountUpsert, EntityMappingUpsert, SourceEntityUpsert, TaskUpsert
 from spo.services import SpotifyAdapter, YouTubeMusicAdapter
 from spo.utils import json_dumps, stable_hash, utcnow
 
@@ -279,12 +279,14 @@ class SyncEngine:
         identity: AccountIdentity,
     ) -> None:
         self.db.upsert_account(
-            account_id=int(account["id"]),
-            service=service.value,
-            remote_account_id=identity.remote_account_id,
-            display_name=identity.display_name,
-            auth_status="connected",
-            oauth_state=None,
+            AccountUpsert(
+                account_id=int(account["id"]),
+                service=service.value,
+                remote_account_id=identity.remote_account_id,
+                display_name=identity.display_name,
+                auth_status="connected",
+                oauth_state=None,
+            ),
         )
 
     def _sync_selected_collections(
@@ -496,17 +498,19 @@ class SyncEngine:
                 item_id = remote_item_id(raw)
                 canonical = canonicalize(adapter.service, kind, item_id, raw)
                 _, created = self.db.upsert_source_entity(
-                    job_id=job_id,
-                    dedupe_key=dedupe_key,
-                    collection_kind=kind.value,
-                    source_id=item_id,
-                    parent_source_id=playlist_entity_id,
-                    canonical_payload=canonical.to_dict(),
-                    payload=raw,
-                    order_index=absolute_index + offset,
-                    page_cursor=cursor,
-                    fingerprint=canonical.fingerprint,
-                    snapshot_hash=stable_hash(json_dumps(raw)),
+                    SourceEntityUpsert(
+                        job_id=job_id,
+                        dedupe_key=dedupe_key,
+                        collection_kind=kind.value,
+                        source_id=item_id,
+                        parent_source_id=playlist_entity_id,
+                        canonical_payload=canonical.to_dict(),
+                        payload=raw,
+                        order_index=absolute_index + offset,
+                        page_cursor=cursor,
+                        fingerprint=canonical.fingerprint,
+                        snapshot_hash=stable_hash(json_dumps(raw)),
+                    ),
                 )
                 if created:
                     self.db.increment_job_counter(job_id, "progress_snapshot_count")
@@ -526,16 +530,18 @@ class SyncEngine:
         item_id = remote_item_id(raw)
         canonical = canonicalize(service, kind, item_id, raw)
         entity_id, created = self.db.upsert_source_entity(
-            job_id=job_id,
-            dedupe_key=f"{job_id}:{kind.value}:{item_id}",
-            collection_kind=kind.value,
-            source_id=item_id,
-            canonical_payload=canonical.to_dict(),
-            payload=raw,
-            order_index=None,
-            page_cursor=cursor,
-            fingerprint=canonical.fingerprint,
-            snapshot_hash=stable_hash(json_dumps(raw)),
+            SourceEntityUpsert(
+                job_id=job_id,
+                dedupe_key=f"{job_id}:{kind.value}:{item_id}",
+                collection_kind=kind.value,
+                source_id=item_id,
+                canonical_payload=canonical.to_dict(),
+                payload=raw,
+                order_index=None,
+                page_cursor=cursor,
+                fingerprint=canonical.fingerprint,
+                snapshot_hash=stable_hash(json_dumps(raw)),
+            ),
         )
         if created:
             self.db.increment_job_counter(job_id, "progress_snapshot_count")
@@ -704,13 +710,15 @@ class SyncEngine:
             self.db.update_task(task_id, state=TaskState.COMPLETED.value, last_error=None)
             self.db.increment_job_counter(context.job_id, "progress_applied_count")
             self.db.upsert_mapping(
-                source_service=context.source.service.value,
-                target_service=context.target.service.value,
-                source_fingerprint=fingerprint,
-                target_id=target_id,
-                target_kind=context.kind.value,
-                confidence=1.0,
-                match_method="applied",
+                EntityMappingUpsert(
+                    source_service=context.source.service.value,
+                    target_service=context.target.service.value,
+                    source_fingerprint=fingerprint,
+                    target_id=target_id,
+                    target_kind=context.kind.value,
+                    confidence=1.0,
+                    match_method="applied",
+                ),
             )
 
     def _apply_playlists(
@@ -795,13 +803,15 @@ class SyncEngine:
         )
         self.db.update_task(playlist_task, last_error=None)
         self.db.upsert_mapping(
-            source_service=context.source.service.value,
-            target_service=context.target.service.value,
-            source_fingerprint=playlist_work.fingerprint,
-            target_id=playlist_id,
-            target_kind=CollectionKind.PLAYLIST.value,
-            confidence=1.0,
-            match_method="playlist_name",
+            EntityMappingUpsert(
+                source_service=context.source.service.value,
+                target_service=context.target.service.value,
+                source_fingerprint=playlist_work.fingerprint,
+                target_id=playlist_id,
+                target_kind=CollectionKind.PLAYLIST.value,
+                confidence=1.0,
+                match_method="playlist_name",
+            ),
         )
         return playlist_id
 
@@ -916,13 +926,15 @@ class SyncEngine:
             self.db.update_task(task_id, state=TaskState.COMPLETED.value, last_error=None)
             self.db.increment_job_counter(context.job_id, "progress_applied_count")
             self.db.upsert_mapping(
-                source_service=context.source.service.value,
-                target_service=context.target.service.value,
-                source_fingerprint=fingerprint,
-                target_id=matched_id,
-                target_kind=child_kind.value,
-                confidence=1.0,
-                match_method="playlist_item",
+                EntityMappingUpsert(
+                    source_service=context.source.service.value,
+                    target_service=context.target.service.value,
+                    source_fingerprint=fingerprint,
+                    target_id=matched_id,
+                    target_kind=child_kind.value,
+                    confidence=1.0,
+                    match_method="playlist_item",
+                ),
             )
 
     def _playlist_target_counter(self, target: StreamingServiceAdapter, playlist_id: str) -> Counter[str]:
@@ -1014,13 +1026,15 @@ class SyncEngine:
         match = choose_best_match(work, aggregated_candidates, target.service)
         if match.accepted and match.candidate:
             self.db.upsert_mapping(
-                source_service=source.service.value,
-                target_service=target.service.value,
-                source_fingerprint=work.fingerprint,
-                target_id=remote_item_id(match.candidate),
-                target_kind=kind.value,
-                confidence=match.score,
-                match_method=match.method,
+                EntityMappingUpsert(
+                    source_service=source.service.value,
+                    target_service=target.service.value,
+                    source_fingerprint=work.fingerprint,
+                    target_id=remote_item_id(match.candidate),
+                    target_kind=kind.value,
+                    confidence=match.score,
+                    match_method=match.method,
+                ),
             )
         return match
 

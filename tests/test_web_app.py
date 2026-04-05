@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from spo.app import AppState, create_app
 from spo.models import AccountIdentity, CredentialType, JobStatus, Service
+from spo.persistence import AccountUpsert
 from spo.services.spotify import SpotifyAdapter
 from tests.fakes import FakeSpotifyAdapter, FakeYouTubeMusicAdapter
 
@@ -41,16 +42,20 @@ def test_web_app_renders_pages_and_creates_job(app_state: AppState) -> None:
     }
 
     source_account_id = app_state.db.upsert_account(
-        service=Service.SPOTIFY.value,
-        auth_status="connected",
-        remote_account_id="spotify-src",
-        display_name="Source Spotify",
+        AccountUpsert(
+            service=Service.SPOTIFY.value,
+            auth_status="connected",
+            remote_account_id="spotify-src",
+            display_name="Source Spotify",
+        ),
     )
     target_account_id = app_state.db.upsert_account(
-        service=Service.YTMUSIC.value,
-        auth_status="connected",
-        remote_account_id="yt-target",
-        display_name="Target YT Music",
+        AccountUpsert(
+            service=Service.YTMUSIC.value,
+            auth_status="connected",
+            remote_account_id="yt-target",
+            display_name="Target YT Music",
+        ),
     )
     app_state.db.save_credentials(
         source_account_id,
@@ -344,10 +349,12 @@ def test_web_app_handles_spotify_connect_callback_and_event_stream(
     assert updated["display_name"] == "Connected Spotify"
 
     target_account_id = app_state.db.upsert_account(
-        service=Service.YTMUSIC.value,
-        auth_status="connected",
-        remote_account_id="yt-stream",
-        display_name="YT Stream",
+        AccountUpsert(
+            service=Service.YTMUSIC.value,
+            auth_status="connected",
+            remote_account_id="yt-stream",
+            display_name="YT Stream",
+        ),
     )
     job_id = app_state.db.create_job(int(updated["id"]), target_account_id, ["saved_track"])
     app_state.db.append_event(job_id, "info", "hello stream")
@@ -383,16 +390,20 @@ async def test_event_stream_endpoint_yields_existing_events(
     """Test that the event stream endpoint yields already stored events."""
     app = create_app(app_state)
     source_account_id = app_state.db.upsert_account(
-        service=Service.SPOTIFY.value,
-        auth_status="connected",
-        remote_account_id="spotify-stream",
-        display_name="Spotify Stream",
+        AccountUpsert(
+            service=Service.SPOTIFY.value,
+            auth_status="connected",
+            remote_account_id="spotify-stream",
+            display_name="Spotify Stream",
+        ),
     )
     target_account_id = app_state.db.upsert_account(
-        service=Service.YTMUSIC.value,
-        auth_status="connected",
-        remote_account_id="yt-stream",
-        display_name="YT Stream",
+        AccountUpsert(
+            service=Service.YTMUSIC.value,
+            auth_status="connected",
+            remote_account_id="yt-stream",
+            display_name="YT Stream",
+        ),
     )
     job_id = app_state.db.create_job(source_account_id, target_account_id, ["saved_track"])
     app_state.db.append_event(job_id, "info", "hello stream")

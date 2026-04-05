@@ -69,3 +69,8 @@ Option A was keeping persistence write methods as long keyword-only signatures e
 Option B was bundling those fields into small dataclass inputs so call sites still name every field, while the storage methods accept one explicit parameter object.
 
 This repository now uses option B because it satisfies Ruff's argument-count rule without hiding what each write contains, and it makes task creation or update payloads easier to reuse in tests and sync orchestration.
+
+For account, source-entity, and mapping writes specifically, option A was adding targeted `PLR0913` suppressions on the persistence methods.
+Option B was extending the same structured-input pattern already used for tasks so every multi-column upsert follows one consistent API style.
+
+This repository now uses option B because it keeps the persistence boundary uniform, preserves explicit field names at each call site, and avoids normalizing per-method lint exemptions for routine storage operations.

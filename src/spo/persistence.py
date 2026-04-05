@@ -86,6 +86,48 @@ class TaskUpsert:
     cooldown_until: str | None = None
 
 
+@dataclass(slots=True)
+class AccountUpsert:
+    """Input payload for inserting or updating one account row."""
+
+    service: str
+    auth_status: str
+    account_id: int | None = None
+    remote_account_id: str | None = None
+    display_name: str | None = None
+    oauth_state: str | None = None
+
+
+@dataclass(slots=True)
+class SourceEntityUpsert:
+    """Input payload for inserting or updating one source entity snapshot row."""
+
+    job_id: int
+    dedupe_key: str
+    collection_kind: str
+    source_id: str
+    canonical_payload: dict[str, Any]
+    payload: dict[str, Any]
+    fingerprint: str
+    snapshot_hash: str
+    parent_source_id: int | None = None
+    order_index: int | None = None
+    page_cursor: str | None = None
+
+
+@dataclass(slots=True)
+class EntityMappingUpsert:
+    """Input payload for inserting or updating one entity mapping row."""
+
+    source_service: str
+    target_service: str
+    source_fingerprint: str
+    target_id: str
+    target_kind: str
+    confidence: float
+    match_method: str
+
+
 def _validate_update_fields(fields: dict[str, object], allowed_fields: frozenset[str], *, entity: str) -> None:
     unexpected = sorted(set(fields).difference(allowed_fields))
     if unexpected:
@@ -289,19 +331,10 @@ class Database:
             (service, oauth_state),
         )
 
-    def upsert_account(
-        self,
-        *,
-        service: str,
-        auth_status: str,
-        account_id: int | None = None,
-        remote_account_id: str | None = None,
-        display_name: str | None = None,
-        oauth_state: str | None = None,
-    ) -> int:
+    def upsert_account(self, account: AccountUpsert) -> int:
         """Insert or update an account row and return its ID."""
         now = utcnow()
-        if account_id is not None:
+        if account.account_id is not None:
             self._write(
                 """
                 UPDATE accounts
@@ -309,30 +342,32 @@ class Database:
                 WHERE id = ?
                 """,
                 (
-                    remote_account_id,
-                    display_name,
-                    auth_status,
-                    oauth_state,
+                    account.remote_account_id,
+                    account.display_name,
+                    account.auth_status,
+                    account.oauth_state,
                     now,
-                    account_id,
+                    account.account_id,
                 ),
             )
-            return account_id
+            return account.account_id
 
         existing = None
-        if remote_account_id:
+        if account.remote_account_id:
             existing = self._execute_one(
                 "SELECT * FROM accounts WHERE service = ? AND remote_account_id = ?",
-                (service, remote_account_id),
+                (account.service, account.remote_account_id),
             )
         if existing:
             return self.upsert_account(
-                service=service,
-                auth_status=auth_status,
-                account_id=int(existing["id"]),
-                remote_account_id=remote_account_id,
-                display_name=display_name,
-                oauth_state=oauth_state,
+                AccountUpsert(
+                    service=account.service,
+                    auth_status=account.auth_status,
+                    account_id=int(existing["id"]),
+                    remote_account_id=account.remote_account_id,
+                    display_name=account.display_name,
+                    oauth_state=account.oauth_state,
+                ),
             )
         return self._write(
             """
@@ -348,11 +383,11 @@ class Database:
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                service,
-                remote_account_id,
-                display_name,
-                auth_status,
-                oauth_state,
+                account.service,
+                account.remote_account_id,
+                account.display_name,
+                account.auth_status,
+                account.oauth_state,
                 now,
                 now,
             ),
@@ -546,23 +581,9 @@ class Database:
             row["detail"] = json_loads(row["detail_json"])
         return rows
 
-    def upsert_source_entity(
-        self,
-        *,
-        job_id: int,
-        dedupe_key: str,
-        collection_kind: str,
-        source_id: str,
-        canonical_payload: dict[str, Any],
-        payload: dict[str, Any],
-        fingerprint: str,
-        snapshot_hash: str,
-        parent_source_id: int | None = None,
-        order_index: int | None = None,
-        page_cursor: str | None = None,
-    ) -> tuple[int, bool]:
+    def upsert_source_entity(self, entity: SourceEntityUpsert) -> tuple[int, bool]:
         """Insert a source snapshot entity unless it already exists."""
-        existing = self._execute_one("SELECT id FROM source_entities WHERE dedupe_key = ?", (dedupe_key,))
+        existing = self._execute_one("SELECT id FROM source_entities WHERE dedupe_key = ?", (entity.dedupe_key,))
         if existing:
             return int(existing["id"]), False
         entity_id = self._write(
@@ -573,17 +594,17 @@ class Database:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                job_id,
-                dedupe_key,
-                collection_kind,
-                source_id,
-                parent_source_id,
-                json_dumps(canonical_payload),
-                json_dumps(payload),
-                order_index,
-                page_cursor,
-                fingerprint,
-                snapshot_hash,
+                entity.job_id,
+                entity.dedupe_key,
+                entity.collection_kind,
+                entity.source_id,
+                entity.parent_source_id,
+                json_dumps(entity.canonical_payload),
+                json_dumps(entity.payload),
+                entity.order_index,
+                entity.page_cursor,
+                entity.fingerprint,
+                entity.snapshot_hash,
                 utcnow(),
             ),
         )
@@ -635,17 +656,7 @@ class Database:
         row = self._execute_one(query, tuple(params))
         return int(row["count"]) if row else 0
 
-    def upsert_mapping(
-        self,
-        *,
-        source_service: str,
-        target_service: str,
-        source_fingerprint: str,
-        target_id: str,
-        target_kind: str,
-        confidence: float,
-        match_method: str,
-    ) -> None:
+    def upsert_mapping(self, mapping: EntityMappingUpsert) -> None:
         """Insert or update a cached mapping between source and target items."""
         now = utcnow()
         existing = self._execute_one(
@@ -653,7 +664,12 @@ class Database:
             SELECT id FROM entity_mappings
             WHERE source_service = ? AND target_service = ? AND source_fingerprint = ? AND target_kind = ?
             """,
-            (source_service, target_service, source_fingerprint, target_kind),
+            (
+                mapping.source_service,
+                mapping.target_service,
+                mapping.source_fingerprint,
+                mapping.target_kind,
+            ),
         )
         if existing:
             self._write(
@@ -662,7 +678,13 @@ class Database:
                 SET target_id = ?, confidence = ?, match_method = ?, last_verified_at = ?
                 WHERE id = ?
                 """,
-                (target_id, confidence, match_method, now, int(existing["id"])),
+                (
+                    mapping.target_id,
+                    mapping.confidence,
+                    mapping.match_method,
+                    now,
+                    int(existing["id"]),
+                ),
             )
             return
         self._write(
@@ -672,13 +694,13 @@ class Database:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                source_service,
-                target_service,
-                source_fingerprint,
-                target_id,
-                target_kind,
-                confidence,
-                match_method,
+                mapping.source_service,
+                mapping.target_service,
+                mapping.source_fingerprint,
+                mapping.target_id,
+                mapping.target_kind,
+                mapping.confidence,
+                mapping.match_method,
                 now,
             ),
         )

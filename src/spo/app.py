@@ -25,13 +25,12 @@ from jinja2 import DictLoader, Environment, select_autoescape
 from spotipy.exceptions import SpotifyException, SpotifyOauthError
 from ytmusicapi.auth.oauth.credentials import OAuthCredentials
 from ytmusicapi.auth.oauth.exceptions import BadOAuthClient, UnauthorizedOAuthClient
-from ytmusicapi.auth.oauth.models import RefreshableTokenDict
 from ytmusicapi.exceptions import YTMusicServerError
 
 from spo.config import Settings, load_settings
 from spo.exceptions import AuthenticationError, RateLimitError, ValidationError
 from spo.models import CollectionKind, CredentialType, Service
-from spo.persistence import Database
+from spo.persistence import AccountUpsert, Database
 from spo.services.spotify import SpotifyAdapter, sanitize_redirect_uri
 from spo.sync import JobRunner, ServiceRegistry, SyncEngine
 from spo.utils import utcnow
@@ -41,6 +40,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from starlette.datastructures import UploadFile
+    from ytmusicapi.auth.oauth.models import RefreshableTokenDict
 
 template_env = Environment(
     loader=DictLoader(TEMPLATES),
@@ -319,12 +319,14 @@ def _complete_ytmusic_oauth(
             last_validated_at=utcnow(),
         )
         app_state.db.upsert_account(
-            account_id=flow.account_id,
-            service=Service.YTMUSIC.value,
-            remote_account_id=identity.remote_account_id,
-            display_name=identity.display_name,
-            auth_status="connected",
-            oauth_state=None,
+            AccountUpsert(
+                account_id=flow.account_id,
+                service=Service.YTMUSIC.value,
+                remote_account_id=identity.remote_account_id,
+                display_name=identity.display_name,
+                auth_status="connected",
+                oauth_state=None,
+            ),
         )
     except AuthenticationError as exc:
         app_state.pending_ytmusic_oauth.pop(flow_id, None)
@@ -345,19 +347,7 @@ def _complete_ytmusic_oauth(
     )
 
 
-def create_app(state: AppState | None = None) -> FastAPI:
-    """Create the FastAPI application and register its routes."""
-    app_state = state or create_state()
-
-    @asynccontextmanager
-    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        if app_state.settings.auto_resume:
-            app_state.runner.auto_resume()
-        yield
-
-    app = FastAPI(title="spo", lifespan=lifespan)
-    app.state.spo = app_state
-
+def _register_page_routes(app: FastAPI, app_state: AppState) -> None:
     @app.get("/", response_class=HTMLResponse)
     def dashboard(request: Request) -> HTMLResponse:
         jobs = app_state.db.list_jobs()
@@ -379,6 +369,35 @@ def create_app(state: AppState | None = None) -> FastAPI:
             accounts=app_state.db.list_accounts(),
         )
 
+    @app.get("/sync/new", response_class=HTMLResponse)
+    def new_sync(request: Request) -> HTMLResponse:
+        accounts = [row for row in app_state.db.list_accounts() if row["auth_status"] == "connected"]
+        collections = [_service_description(kind) for kind in CollectionKind]
+        return render_template(
+            "sync_new.html",
+            title="New Sync",
+            request=request,
+            accounts=accounts,
+            collections=collections,
+        )
+
+    @app.get("/history", response_class=HTMLResponse)
+    def history(request: Request) -> HTMLResponse:
+        return render_template(
+            "history.html",
+            title="History",
+            request=request,
+            jobs=app_state.db.list_jobs(),
+        )
+
+
+def _register_connection_routes(app: FastAPI, app_state: AppState) -> None:
+    _register_spotify_connection_routes(app, app_state)
+    _register_ytmusic_connection_routes(app, app_state)
+    _register_connection_test_route(app, app_state)
+
+
+def _register_spotify_connection_routes(app: FastAPI, app_state: AppState) -> None:
     @app.post("/api/connections/spotify")
     async def save_spotify_connection(
         client_id: Annotated[str, Form()],
@@ -389,12 +408,14 @@ def create_app(state: AppState | None = None) -> FastAPI:
         oauth_state = secrets.token_urlsafe(24)
         existing = _latest_account_for_service(app_state.db, Service.SPOTIFY)
         account_id = app_state.db.upsert_account(
-            account_id=int(existing["id"]) if existing else None,
-            service=Service.SPOTIFY.value,
-            remote_account_id=existing.get("remote_account_id") if existing else None,
-            display_name=existing.get("display_name") if existing else "Spotify account",
-            auth_status="pending",
-            oauth_state=oauth_state,
+            AccountUpsert(
+                account_id=int(existing["id"]) if existing else None,
+                service=Service.SPOTIFY.value,
+                remote_account_id=existing.get("remote_account_id") if existing else None,
+                display_name=existing.get("display_name") if existing else "Spotify account",
+                auth_status="pending",
+                oauth_state=oauth_state,
+            ),
         )
         payload = {
             "client_id": client_id.strip(),
@@ -473,18 +494,27 @@ def create_app(state: AppState | None = None) -> FastAPI:
             last_validated_at=utcnow(),
         )
         app_state.db.upsert_account(
-            account_id=int(account["id"]),
-            service=Service.SPOTIFY.value,
-            remote_account_id=identity.remote_account_id,
-            display_name=identity.display_name,
-            auth_status="connected",
-            oauth_state=None,
+            AccountUpsert(
+                account_id=int(account["id"]),
+                service=Service.SPOTIFY.value,
+                remote_account_id=identity.remote_account_id,
+                display_name=identity.display_name,
+                auth_status="connected",
+                oauth_state=None,
+            ),
         )
         return RedirectResponse(
             f"/connections?message={quote_plus(f'Connected Spotify account {identity.display_name}.')}",
             status_code=303,
         )
 
+
+def _register_ytmusic_connection_routes(app: FastAPI, app_state: AppState) -> None:
+    _register_ytmusic_manual_connection_route(app, app_state)
+    _register_ytmusic_oauth_routes(app, app_state)
+
+
+def _register_ytmusic_manual_connection_route(app: FastAPI, app_state: AppState) -> None:
     @app.post("/api/connections/ytmusic")
     async def save_ytmusic_connection(
         headers_json: Annotated[str | None, Form()] = None,
@@ -503,12 +533,14 @@ def create_app(state: AppState | None = None) -> FastAPI:
             existing = _latest_account_for_service(app_state.db, Service.YTMUSIC)
             account_defaults = _ytmusic_account_defaults(existing)
             account_id = app_state.db.upsert_account(
-                account_id=int(existing["id"]) if existing else None,
-                service=Service.YTMUSIC.value,
-                remote_account_id=account_defaults["remote_account_id"],
-                display_name=account_defaults["display_name"],
-                auth_status="pending",
-                oauth_state=None,
+                AccountUpsert(
+                    account_id=int(existing["id"]) if existing else None,
+                    service=Service.YTMUSIC.value,
+                    remote_account_id=account_defaults["remote_account_id"],
+                    display_name=account_defaults["display_name"],
+                    auth_status="pending",
+                    oauth_state=None,
+                ),
             )
             app_state.db.save_credentials(account_id, credential_type, payload)
             adapter = app_state.registry.create(
@@ -524,12 +556,14 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 last_validated_at=utcnow(),
             )
             app_state.db.upsert_account(
-                account_id=account_id,
-                service=Service.YTMUSIC.value,
-                remote_account_id=identity.remote_account_id,
-                display_name=identity.display_name,
-                auth_status="connected",
-                oauth_state=None,
+                AccountUpsert(
+                    account_id=account_id,
+                    service=Service.YTMUSIC.value,
+                    remote_account_id=identity.remote_account_id,
+                    display_name=identity.display_name,
+                    auth_status="connected",
+                    oauth_state=None,
+                ),
             )
             return RedirectResponse(
                 f"/connections?message={quote_plus('YouTube Music credentials saved.')}",
@@ -541,6 +575,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 status_code=303,
             )
 
+
+def _register_ytmusic_oauth_routes(app: FastAPI, app_state: AppState) -> None:
     @app.post("/api/connections/ytmusic/oauth/start")
     async def start_ytmusic_connection(
         client_id: Annotated[str, Form()],
@@ -555,12 +591,14 @@ def create_app(state: AppState | None = None) -> FastAPI:
             existing = _latest_account_for_service(app_state.db, Service.YTMUSIC)
             account_defaults = _ytmusic_account_defaults(existing)
             account_id = app_state.db.upsert_account(
-                account_id=int(existing["id"]) if existing else None,
-                service=Service.YTMUSIC.value,
-                remote_account_id=account_defaults["remote_account_id"],
-                display_name=account_defaults["display_name"],
-                auth_status="pending",
-                oauth_state=None,
+                AccountUpsert(
+                    account_id=int(existing["id"]) if existing else None,
+                    service=Service.YTMUSIC.value,
+                    remote_account_id=account_defaults["remote_account_id"],
+                    display_name=account_defaults["display_name"],
+                    auth_status="pending",
+                    oauth_state=None,
+                ),
             )
             flow = _start_ytmusic_oauth_flow(
                 account_id,
@@ -612,6 +650,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
             return token_response
         return _complete_ytmusic_oauth(app_state, flow_id, flow, token_response)
 
+
+def _register_connection_test_route(app: FastAPI, app_state: AppState) -> None:
     @app.post("/api/connections/{service}/test")
     async def test_connection(service: str) -> JSONResponse:
         try:
@@ -638,18 +678,19 @@ def create_app(state: AppState | None = None) -> FastAPI:
             },
         )
 
-    @app.get("/sync/new", response_class=HTMLResponse)
-    def new_sync(request: Request) -> HTMLResponse:
-        accounts = [row for row in app_state.db.list_accounts() if row["auth_status"] == "connected"]
-        collections = [_service_description(kind) for kind in CollectionKind]
-        return render_template(
-            "sync_new.html",
-            title="New Sync",
-            request=request,
-            accounts=accounts,
-            collections=collections,
-        )
 
+def _register_job_routes(app: FastAPI, app_state: AppState) -> None:
+    _register_job_management_routes(app, app_state)
+    _register_job_api_routes(app, app_state)
+
+
+def _register_job_management_routes(app: FastAPI, app_state: AppState) -> None:
+    _register_job_creation_route(app, app_state)
+    _register_job_detail_route(app, app_state)
+    _register_job_control_routes(app, app_state)
+
+
+def _register_job_creation_route(app: FastAPI, app_state: AppState) -> None:
     @app.post("/api/jobs")
     async def create_job(request: Request) -> RedirectResponse:
         form = await request.form()
@@ -675,6 +716,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
             )
         return RedirectResponse(f"/jobs/{job_id}", status_code=303)
 
+
+def _register_job_detail_route(app: FastAPI, app_state: AppState) -> None:
     @app.get("/jobs/{job_id}", response_class=HTMLResponse)
     def job_detail(job_id: int, request: Request) -> HTMLResponse:
         job = app_state.db.get_job(job_id)
@@ -693,6 +736,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
             events=events,
         )
 
+
+def _register_job_control_routes(app: FastAPI, app_state: AppState) -> None:
     @app.post("/api/jobs/{job_id}/resume")
     async def resume_job(job_id: int) -> RedirectResponse:
         if not app_state.db.get_job(job_id):
@@ -720,15 +765,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
             status_code=303,
         )
 
-    @app.get("/history", response_class=HTMLResponse)
-    def history(request: Request) -> HTMLResponse:
-        return render_template(
-            "history.html",
-            title="History",
-            request=request,
-            jobs=app_state.db.list_jobs(),
-        )
 
+def _register_job_api_routes(app: FastAPI, app_state: AppState) -> None:
     @app.get("/api/jobs/{job_id}")
     def get_job(job_id: int) -> JSONResponse:
         job = app_state.db.get_job(job_id)
@@ -757,4 +795,20 @@ def create_app(state: AppState | None = None) -> FastAPI:
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
+
+def create_app(state: AppState | None = None) -> FastAPI:
+    """Create the FastAPI application and register its routes."""
+    app_state = state or create_state()
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        if app_state.settings.auto_resume:
+            app_state.runner.auto_resume()
+        yield
+
+    app = FastAPI(title="spo", lifespan=lifespan)
+    app.state.spo = app_state
+    _register_page_routes(app, app_state)
+    _register_connection_routes(app, app_state)
+    _register_job_routes(app, app_state)
     return app
