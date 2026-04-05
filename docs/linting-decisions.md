@@ -38,6 +38,6 @@ This repository now uses option B because it makes matching heuristics explicit,
 ## Sync Complexity Refactors
 
 Option A was suppressing `C901` on orchestration methods like `_apply_playlists` once the control flow became branch-heavy.
-Option B was extracting per-playlist and per-item helper methods so the top-level sync method stays readable while the detailed branches remain explicit and testable.
+Option B was extracting per-playlist, per-library-entity, and per-item helper methods so the top-level sync methods stay readable while the detailed branches remain explicit and testable.
 
-This repository now uses option B because it keeps the orchestration path easy to follow, avoids normalizing lint suppressions for core sync code, and makes it easier to cover playlist edge cases such as mixed item kinds.
+This repository now uses option B because it keeps the orchestration path easy to follow, avoids normalizing lint suppressions for core sync code, and makes it easier to cover playlist edge cases such as mixed item kinds alongside library-collection match and skip flows.

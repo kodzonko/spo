@@ -35,7 +35,32 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 PLAYLIST_NAME_REUSE_THRESHOLD = 0.85
+PendingLibraryItem = tuple[int, str, str]
 PendingPlaylistItem = tuple[int, str, str, CollectionKind]
+
+
+@dataclass(slots=True)
+class LibraryApplyContext:
+    """Shared dependencies for applying a non-playlist collection."""
+
+    job_id: int
+    source: StreamingServiceAdapter
+    target: StreamingServiceAdapter
+    kind: CollectionKind
+    is_cancelled: Callable[[], bool]
+
+    @property
+    def action(self) -> str:
+        """Return the task action label for this collection."""
+        return f"mirror_{self.kind.value}"
+
+
+@dataclass(slots=True)
+class LibraryBatchState:
+    """Mutable state while reconciling one library collection."""
+
+    target_counts: Counter[str]
+    pending_items: list[PendingLibraryItem]
 
 
 @dataclass(slots=True)
@@ -454,96 +479,135 @@ class SyncEngine:
         if not source_entities:
             return
         _, target_counts = self._build_existing_index(target, kind)
-        pending_ids: list[str] = []
-        pending_task_ids: list[int] = []
-        pending_fingerprints: list[str] = []
+        context = LibraryApplyContext(
+            job_id=job_id,
+            source=source,
+            target=target,
+            kind=kind,
+            is_cancelled=is_cancelled,
+        )
+        batch_state = LibraryBatchState(target_counts=target_counts, pending_items=[])
 
         for entity in source_entities:
-            if is_cancelled():
+            if self._apply_library_entity(context, batch_state, entity):
                 return
-            canonical = CanonicalWork.from_dict(entity["canonical"])
-            dedupe_key = f"{job_id}:collection:{entity['id']}"
-            existing_task = self.db.get_task_by_dedupe_key(dedupe_key)
-            if existing_task and existing_task["state"] in {
-                TaskState.COMPLETED.value,
-                TaskState.SKIPPED.value,
-            }:
-                continue
 
-            if target_counts[canonical.fingerprint] > 0:
-                task_id, _ = self.db.create_or_update_task(
-                    job_id=job_id,
-                    dedupe_key=dedupe_key,
-                    action=f"mirror_{kind.value}",
-                    collection_kind=kind.value,
-                    source_entity_id=int(entity["id"]),
-                    payload={"reason": "already_present"},
-                    state=TaskState.SKIPPED.value,
-                )
-                self.db.increment_job_counter(job_id, "progress_skipped_count")
-                self.db.update_task(task_id, last_error=None)
-                continue
+        self._flush_pending_library_items(context, batch_state)
 
-            match = self._resolve_target_match(source, target, canonical, kind)
-            if not match.accepted or not match.candidate:
-                self.db.create_or_update_task(
-                    job_id=job_id,
-                    dedupe_key=dedupe_key,
-                    action=f"mirror_{kind.value}",
-                    collection_kind=kind.value,
-                    source_entity_id=int(entity["id"]),
-                    payload={"reason": "unresolved"},
-                    state=TaskState.SKIPPED.value,
-                    last_error="No acceptable target candidate found.",
-                )
-                self.db.increment_job_counter(job_id, "progress_skipped_count")
-                self.db.append_event(
-                    job_id,
-                    "warning",
-                    f"Skipped {canonical.title} because no acceptable match was found.",
-                )
-                continue
+    def _apply_library_entity(
+        self,
+        context: LibraryApplyContext,
+        batch_state: LibraryBatchState,
+        entity: dict[str, Any],
+    ) -> bool:
+        if context.is_cancelled():
+            return True
 
-            target_id = remote_item_id(match.candidate)
-            task_id, _ = self.db.create_or_update_task(
-                job_id=job_id,
-                dedupe_key=dedupe_key,
-                action=f"mirror_{kind.value}",
-                collection_kind=kind.value,
-                source_entity_id=int(entity["id"]),
-                target_entity_id=target_id,
-                payload={"match_method": match.method, "score": match.score},
-                state=TaskState.PENDING.value,
-            )
-            pending_ids.append(target_id)
-            pending_task_ids.append(task_id)
-            pending_fingerprints.append(canonical.fingerprint)
+        canonical = CanonicalWork.from_dict(entity["canonical"])
+        dedupe_key = f"{context.job_id}:collection:{entity['id']}"
+        existing_task = self.db.get_task_by_dedupe_key(dedupe_key)
+        if existing_task and existing_task["state"] in {
+            TaskState.COMPLETED.value,
+            TaskState.SKIPPED.value,
+        }:
+            return False
 
-        if not pending_ids:
+        if batch_state.target_counts[canonical.fingerprint] > 0:
+            self._skip_existing_library_entity(context, entity, dedupe_key)
+            return False
+
+        match = self._resolve_target_match(context.source, context.target, canonical, context.kind)
+        if not match.accepted or not match.candidate:
+            self._skip_unresolved_library_entity(context, entity, dedupe_key, canonical)
+            return False
+
+        target_id = remote_item_id(match.candidate)
+        task_id, _ = self.db.create_or_update_task(
+            job_id=context.job_id,
+            dedupe_key=dedupe_key,
+            action=context.action,
+            collection_kind=context.kind.value,
+            source_entity_id=int(entity["id"]),
+            target_entity_id=target_id,
+            payload={"match_method": match.method, "score": match.score},
+            state=TaskState.PENDING.value,
+        )
+        batch_state.pending_items.append((task_id, canonical.fingerprint, target_id))
+        return False
+
+    def _skip_existing_library_entity(
+        self,
+        context: LibraryApplyContext,
+        entity: dict[str, Any],
+        dedupe_key: str,
+    ) -> None:
+        task_id, _ = self.db.create_or_update_task(
+            job_id=context.job_id,
+            dedupe_key=dedupe_key,
+            action=context.action,
+            collection_kind=context.kind.value,
+            source_entity_id=int(entity["id"]),
+            payload={"reason": "already_present"},
+            state=TaskState.SKIPPED.value,
+        )
+        self.db.increment_job_counter(context.job_id, "progress_skipped_count")
+        self.db.update_task(task_id, last_error=None)
+
+    def _skip_unresolved_library_entity(
+        self,
+        context: LibraryApplyContext,
+        entity: dict[str, Any],
+        dedupe_key: str,
+        canonical: CanonicalWork,
+    ) -> None:
+        self.db.create_or_update_task(
+            job_id=context.job_id,
+            dedupe_key=dedupe_key,
+            action=context.action,
+            collection_kind=context.kind.value,
+            source_entity_id=int(entity["id"]),
+            payload={"reason": "unresolved"},
+            state=TaskState.SKIPPED.value,
+            last_error="No acceptable target candidate found.",
+        )
+        self.db.increment_job_counter(context.job_id, "progress_skipped_count")
+        self.db.append_event(
+            context.job_id,
+            "warning",
+            f"Skipped {canonical.title} because no acceptable match was found.",
+        )
+
+    def _flush_pending_library_items(
+        self,
+        context: LibraryApplyContext,
+        batch_state: LibraryBatchState,
+    ) -> None:
+        if not batch_state.pending_items:
             return
 
+        pending_ids = [target_id for _, _, target_id in batch_state.pending_items]
         try:
-            self._write_collection(target, kind, pending_ids)
+            self._write_collection(context.target, context.kind, pending_ids)
         except UnsupportedOperationError as exc:
-            for task_id in pending_task_ids:
+            for task_id, _, _ in batch_state.pending_items:
                 self.db.update_task(
                     task_id,
                     state=TaskState.SKIPPED.value,
                     last_error=str(exc),
                 )
-                self.db.increment_job_counter(job_id, "progress_skipped_count")
-            self.db.append_event(job_id, "warning", str(exc))
+                self.db.increment_job_counter(context.job_id, "progress_skipped_count")
+            self.db.append_event(context.job_id, "warning", str(exc))
             return
 
-        for task_id, fingerprint, target_id in zip(pending_task_ids, pending_fingerprints, pending_ids, strict=False):
+        for task_id, fingerprint, target_id in batch_state.pending_items:
             self.db.update_task(task_id, state=TaskState.COMPLETED.value, last_error=None)
-            self.db.increment_job_counter(job_id, "progress_applied_count")
+            self.db.increment_job_counter(context.job_id, "progress_applied_count")
             self.db.upsert_mapping(
-                source_service=source.service.value,
-                target_service=target.service.value,
+                source_service=context.source.service.value,
+                target_service=context.target.service.value,
                 source_fingerprint=fingerprint,
                 target_id=target_id,
-                target_kind=kind.value,
+                target_kind=context.kind.value,
                 confidence=1.0,
                 match_method="applied",
             )
