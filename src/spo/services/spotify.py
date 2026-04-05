@@ -197,18 +197,20 @@ class SpotifyAdapter(StreamingServiceAdapter):
     def list_collection(self, kind: CollectionKind, cursor: str | None = None, page_size: int = 50) -> Page:
         """Return a page of Spotify library items for the requested kind."""
         client = self._ensure_client()
-        offset = self._offset_cursor(cursor)
         if kind == CollectionKind.PLAYLIST:
+            offset = self._offset_cursor(cursor)
             payload = self._call(client.current_user_playlists, limit=page_size, offset=offset)
             items = payload.get("items", [])
             next_cursor = str(offset + page_size) if payload.get("next") else None
             return Page(items=items, next_cursor=next_cursor)
         if kind == CollectionKind.SAVED_TRACK:
+            offset = self._offset_cursor(cursor)
             payload = self._call(client.current_user_saved_tracks, limit=page_size, offset=offset)
             items = [item["track"] for item in payload.get("items", []) if item.get("track")]
             next_cursor = str(offset + page_size) if payload.get("next") else None
             return Page(items=items, next_cursor=next_cursor)
         if kind == CollectionKind.SAVED_ALBUM:
+            offset = self._offset_cursor(cursor)
             payload = self._call(client.current_user_saved_albums, limit=page_size, offset=offset)
             items = [item["album"] for item in payload.get("items", []) if item.get("album")]
             next_cursor = str(offset + page_size) if payload.get("next") else None
@@ -220,11 +222,13 @@ class SpotifyAdapter(StreamingServiceAdapter):
             next_cursor = artists.get("cursors", {}).get("after")
             return Page(items=items, next_cursor=next_cursor)
         if kind == CollectionKind.SAVED_PODCAST:
+            offset = self._offset_cursor(cursor)
             payload = self._call(client.current_user_saved_shows, limit=page_size, offset=offset)
             items = [item["show"] for item in payload.get("items", []) if item.get("show")]
             next_cursor = str(offset + page_size) if payload.get("next") else None
             return Page(items=items, next_cursor=next_cursor)
         if kind == CollectionKind.SAVED_EPISODE:
+            offset = self._offset_cursor(cursor)
             payload = self._call(client.current_user_saved_episodes, limit=page_size, offset=offset)
             items = [item["episode"] for item in payload.get("items", []) if item.get("episode")]
             next_cursor = str(offset + page_size) if payload.get("next") else None
