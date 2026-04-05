@@ -10,7 +10,7 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, NoReturn
 from urllib.parse import quote_plus
 
 import requests
@@ -25,6 +25,7 @@ from jinja2 import DictLoader, Environment, select_autoescape
 from spotipy.exceptions import SpotifyException, SpotifyOauthError
 from ytmusicapi.auth.oauth.credentials import OAuthCredentials
 from ytmusicapi.auth.oauth.exceptions import BadOAuthClient, UnauthorizedOAuthClient
+from ytmusicapi.auth.oauth.models import RefreshableTokenDict
 from ytmusicapi.exceptions import YTMusicServerError
 
 from spo.config import Settings, load_settings
@@ -164,6 +165,10 @@ def _ytmusic_account_defaults(existing: dict[str, Any] | None) -> dict[str, str 
     }
 
 
+def _raise_validation_error(message: str) -> NoReturn:
+    raise ValidationError(message)
+
+
 def _start_ytmusic_oauth_flow(
     account_id: int,
     *,
@@ -239,7 +244,7 @@ def _poll_ytmusic_oauth_token(
     app_state: AppState,
     flow_id: str,
     flow: PendingYouTubeMusicOAuth,
-) -> dict[str, Any] | JSONResponse:
+) -> RefreshableTokenDict | JSONResponse:
     try:
         return OAuthCredentials(flow.client_id, flow.client_secret).token_from_code(flow.device_code)
     except (BadOAuthClient, UnauthorizedOAuthClient) as exc:
@@ -263,7 +268,7 @@ def _complete_ytmusic_oauth(
     app_state: AppState,
     flow_id: str,
     flow: PendingYouTubeMusicOAuth,
-    token_response: dict[str, Any],
+    token_response: RefreshableTokenDict,
 ) -> JSONResponse:
     error_code = token_response.get("error")
     if error_code == "authorization_pending":
@@ -494,7 +499,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 }
                 credential_type = CredentialType.YTMUSIC_HEADERS.value
             else:
-                raise ValidationError("Paste browser headers JSON, or use Connect YouTube Music above.")
+                _raise_validation_error("Paste browser headers JSON, or use Connect YouTube Music above.")
             existing = _latest_account_for_service(app_state.db, Service.YTMUSIC)
             account_defaults = _ytmusic_account_defaults(existing)
             account_id = app_state.db.upsert_account(
@@ -545,7 +550,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             resolved_client_id = client_id.strip()
             resolved_client_secret = client_secret.strip()
             if not resolved_client_id or not resolved_client_secret:
-                raise ValidationError("Provide a Google OAuth client ID and secret for YouTube Music.")
+                _raise_validation_error("Provide a Google OAuth client ID and secret for YouTube Music.")
 
             existing = _latest_account_for_service(app_state.db, Service.YTMUSIC)
             account_defaults = _ytmusic_account_defaults(existing)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Any, NoReturn, ParamSpec, TypeVar
 
 import requests
 from ytmusicapi import YTMusic
@@ -36,6 +36,10 @@ R = TypeVar("R")
 HTTP_TOO_MANY_REQUESTS = int(requests.codes["too_many_requests"])
 HTTP_UNAUTHORIZED = int(requests.codes["unauthorized"])
 HTTP_FORBIDDEN = int(requests.codes["forbidden"])
+
+
+def _raise_authentication_error(message: str) -> NoReturn:
+    raise AuthenticationError(message)
 
 
 class YouTubeMusicAdapter(StreamingServiceAdapter):
@@ -112,11 +116,11 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
             elif credential_type == "ytmusic_oauth":
                 oauth_client = self.credential_payload.get("oauth_client")
                 if not isinstance(oauth_client, dict):
-                    raise AuthenticationError("YouTube Music OAuth client credentials are missing.")
+                    _raise_authentication_error("YouTube Music OAuth client credentials are missing.")
                 client_id = str(oauth_client.get("client_id") or "").strip()
                 client_secret = str(oauth_client.get("client_secret") or "").strip()
                 if not client_id or not client_secret:
-                    raise AuthenticationError("YouTube Music OAuth client credentials are incomplete.")
+                    _raise_authentication_error("YouTube Music OAuth client credentials are incomplete.")
                 auth_file = self._auth_file_path()
                 auth_file.write_text(
                     json.dumps(data if isinstance(data, dict) else json.loads(data)),
@@ -130,7 +134,7 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
                     ),
                 )
             else:
-                raise AuthenticationError("Unsupported YouTube Music credential type.")
+                _raise_authentication_error("Unsupported YouTube Music credential type.")
         except Exception as exc:  # pragma: no cover - library internals
             message = f"YouTube Music authentication failed: {exc}"
             raise AuthenticationError(message) from exc

@@ -55,3 +55,10 @@ Option A was suppressing `PLR0911` on route handlers and service methods that re
 Option B was consolidating those flows around a single response or page return while leaving the state-specific branches explicit.
 
 This repository now uses option B because it keeps OAuth cleanup and collection-fetch behavior testable without normalizing lint suppressions, and it reduces the risk of one branch forgetting shared follow-up work like pagination or flow removal.
+
+## Validation Raises Inside Broad Try Blocks
+
+Option A was raising validation and authentication exceptions inline inside broad `try` blocks and relying on the surrounding `except` clauses to normalize them.
+Option B was moving those deliberate validation raises into small helper functions so the surrounding `try` blocks stay focused on fallible library and parsing calls.
+
+This repository now uses option B because it satisfies Ruff's `TRY301` rule without changing behavior, and it makes the intentionally raised validation failures easier to distinguish from unexpected exceptions coming from third-party code.
