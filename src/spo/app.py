@@ -212,6 +212,134 @@ def _get_pending_ytmusic_oauth(
     return flow
 
 
+def _connections_redirect_url(message: str, *, error: bool) -> str:
+    query_key = "error" if error else "message"
+    return f"/connections?{query_key}={quote_plus(message)}"
+
+
+def _oauth_status_response(
+    status: str,
+    *,
+    status_code: int = 200,
+    message: str | None = None,
+    redirect_url: str | None = None,
+    interval_seconds: int | None = None,
+) -> JSONResponse:
+    payload: dict[str, object] = {"status": status}
+    if message is not None:
+        payload["message"] = message
+    if redirect_url is not None:
+        payload["redirect_url"] = redirect_url
+    if interval_seconds is not None:
+        payload["interval_seconds"] = interval_seconds
+    return JSONResponse(payload, status_code=status_code)
+
+
+def _poll_ytmusic_oauth_token(
+    app_state: AppState,
+    flow_id: str,
+    flow: PendingYouTubeMusicOAuth,
+) -> dict[str, Any] | JSONResponse:
+    try:
+        return OAuthCredentials(flow.client_id, flow.client_secret).token_from_code(flow.device_code)
+    except (BadOAuthClient, UnauthorizedOAuthClient) as exc:
+        app_state.pending_ytmusic_oauth.pop(flow_id, None)
+        message = f"YouTube Music OAuth setup failed: {exc}"
+        return _oauth_status_response(
+            "error",
+            status_code=400,
+            message=message,
+            redirect_url=_connections_redirect_url(message, error=True),
+        )
+    except (YTMusicServerError, requests.RequestException, ValueError) as exc:
+        return _oauth_status_response(
+            "error",
+            status_code=502,
+            message=f"Could not finish YouTube Music OAuth: {exc}",
+        )
+
+
+def _complete_ytmusic_oauth(
+    app_state: AppState,
+    flow_id: str,
+    flow: PendingYouTubeMusicOAuth,
+    token_response: dict[str, Any],
+) -> JSONResponse:
+    error_code = token_response.get("error")
+    if error_code == "authorization_pending":
+        return _oauth_status_response("pending", interval_seconds=flow.interval_seconds)
+    if error_code == "slow_down":
+        flow.interval_seconds += 5
+        return _oauth_status_response("pending", interval_seconds=flow.interval_seconds)
+    if error_code in {"access_denied", "expired_token"}:
+        app_state.pending_ytmusic_oauth.pop(flow_id, None)
+        message = "YouTube Music authorization was denied or expired. Start the connection again."
+        return _oauth_status_response(
+            "error",
+            status_code=400,
+            message=message,
+            redirect_url=_connections_redirect_url(message, error=True),
+        )
+    if not token_response.get("access_token") or not token_response.get("refresh_token"):
+        return _oauth_status_response(
+            "error",
+            status_code=502,
+            message="YouTube Music OAuth did not return usable tokens.",
+        )
+
+    expires_in = int(token_response.get("expires_in") or 0)
+    persisted_token = {
+        **token_response,
+        "expires_at": int(time.time()) + expires_in,
+    }
+    payload = {
+        "credential_type": CredentialType.YTMUSIC_OAUTH.value,
+        "data": persisted_token,
+        "oauth_client": {
+            "client_id": flow.client_id,
+            "client_secret": flow.client_secret,
+        },
+    }
+    try:
+        adapter = app_state.registry.create(
+            service=Service.YTMUSIC,
+            account_id=flow.account_id,
+            credential_payload=payload,
+        )
+        identity = adapter.authenticate()
+        app_state.db.save_credentials(
+            flow.account_id,
+            CredentialType.YTMUSIC_OAUTH.value,
+            adapter.persisted_payload,
+            last_validated_at=utcnow(),
+        )
+        app_state.db.upsert_account(
+            account_id=flow.account_id,
+            service=Service.YTMUSIC.value,
+            remote_account_id=identity.remote_account_id,
+            display_name=identity.display_name,
+            auth_status="connected",
+            oauth_state=None,
+        )
+    except AuthenticationError as exc:
+        app_state.pending_ytmusic_oauth.pop(flow_id, None)
+        message = str(exc)
+        return _oauth_status_response(
+            "error",
+            status_code=400,
+            message=message,
+            redirect_url=_connections_redirect_url(message, error=True),
+        )
+
+    app_state.pending_ytmusic_oauth.pop(flow_id, None)
+    message = f"Connected YouTube Music account {identity.display_name}."
+    return _oauth_status_response(
+        "connected",
+        message=message,
+        redirect_url=_connections_redirect_url(message, error=False),
+    )
+
+
 def create_app(state: AppState | None = None) -> FastAPI:
     """Create the FastAPI application and register its routes."""
     app_state = state or create_state()
@@ -467,127 +595,17 @@ def create_app(state: AppState | None = None) -> FastAPI:
         flow = _get_pending_ytmusic_oauth(app_state, flow_id)
         if flow is None:
             message = "YouTube Music authorization expired. Start the connection again."
-            return JSONResponse(
-                {
-                    "status": "expired",
-                    "message": message,
-                    "redirect_url": f"/connections?error={quote_plus(message)}",
-                },
+            return _oauth_status_response(
+                "expired",
                 status_code=410,
+                message=message,
+                redirect_url=_connections_redirect_url(message, error=True),
             )
 
-        try:
-            token_response = OAuthCredentials(flow.client_id, flow.client_secret).token_from_code(flow.device_code)
-        except (BadOAuthClient, UnauthorizedOAuthClient) as exc:
-            app_state.pending_ytmusic_oauth.pop(flow_id, None)
-            message = f"YouTube Music OAuth setup failed: {exc}"
-            return JSONResponse(
-                {
-                    "status": "error",
-                    "message": message,
-                    "redirect_url": f"/connections?error={quote_plus(message)}",
-                },
-                status_code=400,
-            )
-        except (YTMusicServerError, requests.RequestException, ValueError) as exc:
-            return JSONResponse(
-                {
-                    "status": "error",
-                    "message": f"Could not finish YouTube Music OAuth: {exc}",
-                },
-                status_code=502,
-            )
-
-        error_code = token_response.get("error")
-        if error_code == "authorization_pending":
-            return JSONResponse(
-                {
-                    "status": "pending",
-                    "interval_seconds": flow.interval_seconds,
-                },
-            )
-        if error_code == "slow_down":
-            flow.interval_seconds += 5
-            return JSONResponse(
-                {
-                    "status": "pending",
-                    "interval_seconds": flow.interval_seconds,
-                },
-            )
-        if error_code in {"access_denied", "expired_token"}:
-            app_state.pending_ytmusic_oauth.pop(flow_id, None)
-            message = "YouTube Music authorization was denied or expired. Start the connection again."
-            return JSONResponse(
-                {
-                    "status": "error",
-                    "message": message,
-                    "redirect_url": f"/connections?error={quote_plus(message)}",
-                },
-                status_code=400,
-            )
-        if not token_response.get("access_token") or not token_response.get("refresh_token"):
-            return JSONResponse(
-                {
-                    "status": "error",
-                    "message": "YouTube Music OAuth did not return usable tokens.",
-                },
-                status_code=502,
-            )
-
-        expires_in = int(token_response.get("expires_in") or 0)
-        persisted_token = {
-            **token_response,
-            "expires_at": int(time.time()) + expires_in,
-        }
-        payload = {
-            "credential_type": CredentialType.YTMUSIC_OAUTH.value,
-            "data": persisted_token,
-            "oauth_client": {
-                "client_id": flow.client_id,
-                "client_secret": flow.client_secret,
-            },
-        }
-        try:
-            adapter = app_state.registry.create(
-                service=Service.YTMUSIC,
-                account_id=flow.account_id,
-                credential_payload=payload,
-            )
-            identity = adapter.authenticate()
-            app_state.db.save_credentials(
-                flow.account_id,
-                CredentialType.YTMUSIC_OAUTH.value,
-                adapter.persisted_payload,
-                last_validated_at=utcnow(),
-            )
-            app_state.db.upsert_account(
-                account_id=flow.account_id,
-                service=Service.YTMUSIC.value,
-                remote_account_id=identity.remote_account_id,
-                display_name=identity.display_name,
-                auth_status="connected",
-                oauth_state=None,
-            )
-        except AuthenticationError as exc:
-            app_state.pending_ytmusic_oauth.pop(flow_id, None)
-            return JSONResponse(
-                {
-                    "status": "error",
-                    "message": str(exc),
-                    "redirect_url": f"/connections?error={quote_plus(str(exc))}",
-                },
-                status_code=400,
-            )
-
-        app_state.pending_ytmusic_oauth.pop(flow_id, None)
-        message = f"Connected YouTube Music account {identity.display_name}."
-        return JSONResponse(
-            {
-                "status": "connected",
-                "message": message,
-                "redirect_url": f"/connections?message={quote_plus(message)}",
-            },
-        )
+        token_response = _poll_ytmusic_oauth_token(app_state, flow_id, flow)
+        if isinstance(token_response, JSONResponse):
+            return token_response
+        return _complete_ytmusic_oauth(app_state, flow_id, flow, token_response)
 
     @app.post("/api/connections/{service}/test")
     async def test_connection(service: str) -> JSONResponse:

@@ -45,25 +45,24 @@ def normalize_text(value: str | None) -> str:
 
 
 def _parse_duration_ms(value: object) -> int | None:
+    duration_ms: int | None = None
     if value is None:
-        return None
+        return duration_ms
     if isinstance(value, int):
-        if value > SECONDS_DURATION_CUTOFF:
-            return value
-        return value * 1000
-    if isinstance(value, float):
-        return int(value * 1000)
-    if isinstance(value, str):
+        duration_ms = value if value > SECONDS_DURATION_CUTOFF else value * 1000
+    elif isinstance(value, float):
+        duration_ms = int(value * 1000)
+    elif isinstance(value, str):
         if value.isdigit():
-            return int(value)
-        parts = [int(part) for part in value.split(":") if part.isdigit()]
-        if not parts:
-            return None
-        total_seconds = 0
-        for part in parts:
-            total_seconds = total_seconds * 60 + part
-        return total_seconds * 1000
-    return None
+            duration_ms = int(value)
+        else:
+            parts = [int(part) for part in value.split(":") if part.isdigit()]
+            if parts:
+                total_seconds = 0
+                for part in parts:
+                    total_seconds = total_seconds * 60 + part
+                duration_ms = total_seconds * 1000
+    return duration_ms
 
 
 def _extract_artists(raw: dict[str, Any]) -> list[str]:

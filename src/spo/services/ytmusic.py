@@ -176,31 +176,27 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
     def list_collection(self, kind: CollectionKind, cursor: str | None = None, page_size: int = 50) -> Page:
         """Return a page of YouTube Music library items for the requested kind."""
         client = self._ensure_client()
+        items: list[dict[str, Any]]
         if kind == CollectionKind.PLAYLIST:
             items = self._call(client.get_library_playlists, limit=None)
-            return self._slice(items, cursor, page_size)
-        if kind == CollectionKind.SAVED_TRACK:
+        elif kind == CollectionKind.SAVED_TRACK:
             items = self._call(client.get_library_songs, limit=5000)
-            return self._slice(items, cursor, page_size)
-        if kind == CollectionKind.LIKED_TRACK:
+        elif kind == CollectionKind.LIKED_TRACK:
             payload = self._call(client.get_liked_songs, limit=5000)
             items = payload.get("tracks", []) if isinstance(payload, dict) else []
-            return self._slice(items, cursor, page_size)
-        if kind == CollectionKind.SAVED_ALBUM:
+        elif kind == CollectionKind.SAVED_ALBUM:
             items = self._call(client.get_library_albums, limit=5000)
-            return self._slice(items, cursor, page_size)
-        if kind == CollectionKind.FOLLOWED_ARTIST:
+        elif kind == CollectionKind.FOLLOWED_ARTIST:
             items = self._call(client.get_library_subscriptions, limit=5000)
-            return self._slice(items, cursor, page_size)
-        if kind == CollectionKind.SAVED_PODCAST:
+        elif kind == CollectionKind.SAVED_PODCAST:
             items = self._call(client.get_library_podcasts, limit=5000)
-            return self._slice(items, cursor, page_size)
-        if kind == CollectionKind.SAVED_EPISODE:
+        elif kind == CollectionKind.SAVED_EPISODE:
             payload = self._call(client.get_saved_episodes, limit=5000)
             items = payload.get("items", []) if isinstance(payload, dict) else []
-            return self._slice(items, cursor, page_size)
-        message = f"Unsupported YouTube Music collection: {kind}"
-        raise ValueError(message)
+        else:
+            message = f"Unsupported YouTube Music collection: {kind}"
+            raise ValueError(message)
+        return self._slice(items, cursor, page_size)
 
     def get_playlist_items(self, playlist_id: str, cursor: str | None = None, page_size: int = 100) -> Page:
         """Return a page of items from a YouTube Music playlist."""

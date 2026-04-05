@@ -1,5 +1,7 @@
 """Tests for the FastAPI web application flows."""
 
+from typing import ClassVar
+
 import pytest
 import requests
 from fastapi.routing import APIRoute
@@ -217,6 +219,63 @@ def test_web_app_can_start_and_complete_ytmusic_oauth_connection(
     assert credentials["credential_type"] == CredentialType.YTMUSIC_OAUTH.value
     assert credentials["payload"]["data"]["refresh_token"] == "oauth-refresh-token"
     assert credentials["payload"]["oauth_client"]["client_id"] == "google-client-id"
+
+
+def test_web_app_keeps_ytmusic_oauth_pending_and_slows_polling_interval(
+    app_state: AppState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test that pending OAuth polls keep the flow alive and honor slow-down responses."""
+
+    class FakeOAuthCredentials:
+        token_responses: ClassVar[list[dict[str, str]]] = [
+            {"error": "authorization_pending"},
+            {"error": "slow_down"},
+        ]
+
+        def __init__(self, client_id: str, client_secret: str) -> None:
+            assert client_id == "google-client-id"
+            assert client_secret == "google-client-secret"
+
+        def get_code(self) -> dict[str, str | int]:
+            return {
+                "device_code": "device-code",
+                "user_code": "ABCD-EFGH",
+                "verification_url": "https://google.example/device",
+                "interval": 1,
+                "expires_in": 600,
+            }
+
+        def token_from_code(self, device_code: str) -> dict[str, str]:
+            assert device_code == "device-code"
+            return self.token_responses.pop(0)
+
+    monkeypatch.setattr("spo.app.OAuthCredentials", FakeOAuthCredentials)
+
+    client = TestClient(create_app(app_state))
+    start = client.post(
+        "/api/connections/ytmusic/oauth/start",
+        data={
+            "client_id": "google-client-id",
+            "client_secret": "google-client-secret",
+        },
+        follow_redirects=False,
+    )
+    flow_id = start.headers["location"].rsplit("/", maxsplit=1)[-1]
+
+    first_status = client.get(f"/api/connections/ytmusic/oauth/{flow_id}/status")
+    second_status = client.get(f"/api/connections/ytmusic/oauth/{flow_id}/status")
+
+    assert first_status.status_code == HTTP_OK
+    assert first_status.json() == {
+        "status": "pending",
+        "interval_seconds": 1,
+    }
+    assert second_status.status_code == HTTP_OK
+    assert second_status.json() == {
+        "status": "pending",
+        "interval_seconds": 6,
+    }
 
 
 def test_web_app_handles_spotify_connect_callback_and_event_stream(

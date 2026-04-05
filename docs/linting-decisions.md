@@ -48,3 +48,10 @@ Option A was keeping `run_job` as a single method that mixed setup, authenticati
 Option B was moving those responsibilities into small private helpers coordinated by a lightweight job execution context.
 
 This repository now uses option B because the main sync entry point stays readable under Ruff's statement limits, and setup or pause/fail paths can be exercised directly in integration-style tests without weakening the lint rules.
+
+## Return-Heavy Route And Adapter Branches
+
+Option A was suppressing `PLR0911` on route handlers and service methods that return from many branch-specific states.
+Option B was consolidating those flows around a single response or page return while leaving the state-specific branches explicit.
+
+This repository now uses option B because it keeps OAuth cleanup and collection-fetch behavior testable without normalizing lint suppressions, and it reduces the risk of one branch forgetting shared follow-up work like pagination or flow removal.
