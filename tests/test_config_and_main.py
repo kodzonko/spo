@@ -1,6 +1,4 @@
-# ruff: noqa: D103, S101
-# Pytest bare asserts are idiomatic here, and per-test docstrings add little value.
-"""Tests for config loading and CLI defaults."""
+"""Tests for configuration loading and CLI defaults."""
 
 from __future__ import annotations
 
@@ -26,6 +24,7 @@ def _app_data_dir_for(repo_root: Path) -> Path:
 
 
 def test_load_settings_reads_settings_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that settings are loaded from the repository settings file."""
     settings_dir = _app_data_dir_for(tmp_path)
     settings_dir.mkdir()
     (settings_dir / "settings.toml").write_text(
@@ -46,6 +45,7 @@ def test_load_settings_reads_settings_file(tmp_path: Path, monkeypatch: pytest.M
 
 
 def test_load_settings_ignores_app_data_dir_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that `app_data_dir` overrides are ignored when loading settings."""
     settings_dir = _app_data_dir_for(tmp_path)
     settings_dir.mkdir()
     (settings_dir / "settings.toml").write_text(
@@ -62,6 +62,7 @@ def test_load_settings_ignores_app_data_dir_override(tmp_path: Path, monkeypatch
 
 
 def test_main_web_invokes_uvicorn_with_overrides(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that `spo web` forwards host and port overrides to Uvicorn."""
     settings_dir = _app_data_dir_for(tmp_path)
     monkeypatch.setattr("spo.config._repo_root", lambda: tmp_path)
 
@@ -83,6 +84,7 @@ def test_main_web_invokes_uvicorn_with_overrides(tmp_path: Path, monkeypatch: py
 
 
 def test_main_defaults_to_web_without_subcommand(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that the CLI starts the web app when no subcommand is given."""
     settings_dir = _app_data_dir_for(tmp_path)
     monkeypatch.setattr("spo.config._repo_root", lambda: tmp_path)
 

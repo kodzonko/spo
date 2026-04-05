@@ -1,3 +1,5 @@
+"""Application-specific exceptions raised by spo."""
+
 from __future__ import annotations
 
 
@@ -12,7 +14,8 @@ class AuthenticationError(SpoError):
 class RateLimitError(SpoError):
     """The remote service asked us to wait before continuing."""
 
-    def __init__(self, message: str, retry_after: int | float | None = None):
+    def __init__(self, message: str, retry_after: float | None = None):
+        """Store retry metadata for a rate-limit failure."""
         super().__init__(message)
         self.retry_after = retry_after
 

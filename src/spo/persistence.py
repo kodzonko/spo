@@ -1,21 +1,67 @@
+"""SQLite persistence helpers for accounts, jobs, tasks, and mappings."""
+
 from __future__ import annotations
 
 import sqlite3
 from contextlib import closing
-from pathlib import Path
 from threading import RLock
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from spo.models import JobStatus, TaskState
 from spo.utils import json_dumps, json_loads, utcnow
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
+JOB_UPDATE_FIELDS = frozenset(
+    {
+        "current_collection_kind",
+        "finished_at",
+        "last_error",
+        "phase",
+        "resume_token",
+        "started_at",
+        "status",
+        "updated_at",
+    },
+)
+JOB_COUNTER_FIELDS = frozenset(
+    {
+        "progress_applied_count",
+        "progress_failed_count",
+        "progress_skipped_count",
+        "progress_snapshot_count",
+    },
+)
+TASK_UPDATE_FIELDS = frozenset(
+    {
+        "cooldown_until",
+        "last_error",
+        "payload_json",
+        "state",
+        "target_entity_id",
+        "updated_at",
+    },
+)
+
+
+def _validate_update_fields(fields: dict[str, Any], allowed_fields: frozenset[str], *, entity: str) -> None:
+    unexpected = sorted(set(fields).difference(allowed_fields))
+    if unexpected:
+        joined = ", ".join(unexpected)
+        raise ValueError(f"Unsupported {entity} update fields: {joined}")
+
 
 class Database:
+    """Persist application state in a SQLite database."""
+
     def __init__(self, path: Path):
+        """Initialize the database wrapper for the given file path."""
         self.path = path
         self._lock = RLock()
 
     def connect(self) -> sqlite3.Connection:
+        """Open a SQLite connection configured for this application."""
         connection = sqlite3.connect(self.path, check_same_thread=False)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
@@ -23,11 +69,11 @@ class Database:
         return connection
 
     def initialize(self) -> None:
+        """Create the database schema if it does not already exist."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._lock:
-            with closing(self.connect()) as connection:
-                connection.executescript(
-                    """
+        with self._lock, closing(self.connect()) as connection:
+            connection.executescript(
+                """
                 CREATE TABLE IF NOT EXISTS accounts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     service TEXT NOT NULL,
@@ -150,59 +196,52 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_cooldowns_account_until
                     ON service_cooldowns(account_id, cooldown_until);
-                """
-                )
-                connection.commit()
+                """,
+            )
+            connection.commit()
 
-    def _execute(
-        self, query: str, params: tuple[Any, ...] = ()
-    ) -> list[dict[str, Any]]:
-        with self._lock:
-            with closing(self.connect()) as connection:
-                cursor = connection.execute(query, params)
-                rows = [dict(row) for row in cursor.fetchall()]
-                connection.commit()
-                return rows
+    def _execute(self, query: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+        with self._lock, closing(self.connect()) as connection:
+            cursor = connection.execute(query, params)
+            rows = [dict(row) for row in cursor.fetchall()]
+            connection.commit()
+            return rows
 
-    def _execute_one(
-        self, query: str, params: tuple[Any, ...] = ()
-    ) -> dict[str, Any] | None:
+    def _execute_one(self, query: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
         rows = self._execute(query, params)
         return rows[0] if rows else None
 
     def _write(self, query: str, params: tuple[Any, ...] = ()) -> int:
-        with self._lock:
-            with closing(self.connect()) as connection:
-                cursor = connection.execute(query, params)
-                connection.commit()
-                if cursor.lastrowid is None:
-                    raise RuntimeError("Database write did not return a row id.")
-                return cursor.lastrowid
+        with self._lock, closing(self.connect()) as connection:
+            cursor = connection.execute(query, params)
+            connection.commit()
+            if cursor.lastrowid is None:
+                raise RuntimeError("Database write did not return a row id.")
+            return cursor.lastrowid
 
     def _write_script(self, statements: list[tuple[str, tuple[Any, ...]]]) -> None:
-        with self._lock:
-            with closing(self.connect()) as connection:
-                for query, params in statements:
-                    connection.execute(query, params)
-                connection.commit()
+        with self._lock, closing(self.connect()) as connection:
+            for query, params in statements:
+                connection.execute(query, params)
+            connection.commit()
 
     def list_accounts(self) -> list[dict[str, Any]]:
-        return self._execute(
-            "SELECT * FROM accounts ORDER BY service, display_name, id"
-        )
+        """Return all stored accounts ordered for display."""
+        return self._execute("SELECT * FROM accounts ORDER BY service, display_name, id")
 
     def get_account(self, account_id: int) -> dict[str, Any] | None:
+        """Return a stored account by its primary key."""
         return self._execute_one("SELECT * FROM accounts WHERE id = ?", (account_id,))
 
     def find_account_by_service(self, service: str) -> list[dict[str, Any]]:
+        """Return accounts for a service ordered by most recent update."""
         return self._execute(
             "SELECT * FROM accounts WHERE service = ? ORDER BY updated_at DESC",
             (service,),
         )
 
-    def find_account_by_oauth_state(
-        self, service: str, oauth_state: str
-    ) -> dict[str, Any] | None:
+    def find_account_by_oauth_state(self, service: str, oauth_state: str) -> dict[str, Any] | None:
+        """Return the account associated with an OAuth callback state."""
         return self._execute_one(
             "SELECT * FROM accounts WHERE service = ? AND oauth_state = ?",
             (service, oauth_state),
@@ -218,6 +257,7 @@ class Database:
         display_name: str | None = None,
         oauth_state: str | None = None,
     ) -> int:
+        """Insert or update an account row and return its ID."""
         now = utcnow()
         if account_id is not None:
             self._write(
@@ -254,7 +294,15 @@ class Database:
             )
         return self._write(
             """
-            INSERT INTO accounts(service, remote_account_id, display_name, auth_status, oauth_state, created_at, updated_at)
+            INSERT INTO accounts(
+                service,
+                remote_account_id,
+                display_name,
+                auth_status,
+                oauth_state,
+                created_at,
+                updated_at
+            )
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -276,6 +324,7 @@ class Database:
         *,
         last_validated_at: str | None = None,
     ) -> int:
+        """Insert or update credentials for an account and return the row ID."""
         now = utcnow()
         existing = self._execute_one(
             """
@@ -301,7 +350,14 @@ class Database:
             return int(existing["id"])
         return self._write(
             """
-            INSERT INTO service_credentials(account_id, credential_type, payload_json, created_at, updated_at, last_validated_at)
+            INSERT INTO service_credentials(
+                account_id,
+                credential_type,
+                payload_json,
+                created_at,
+                updated_at,
+                last_validated_at
+            )
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
@@ -315,6 +371,7 @@ class Database:
         )
 
     def get_credentials(self, account_id: int) -> dict[str, Any] | None:
+        """Return the latest credential payload stored for an account."""
         row = self._execute_one(
             """
             SELECT * FROM service_credentials
@@ -328,9 +385,8 @@ class Database:
             row["payload"] = json_loads(row["payload_json"])
         return row
 
-    def create_job(
-        self, source_account_id: int, target_account_id: int, scope: list[str]
-    ) -> int:
+    def create_job(self, source_account_id: int, target_account_id: int, scope: list[str]) -> int:
+        """Create a new synchronization job and return its ID."""
         now = utcnow()
         return self._write(
             """
@@ -349,12 +405,14 @@ class Database:
         )
 
     def get_job(self, job_id: int) -> dict[str, Any] | None:
+        """Return a synchronization job by ID."""
         row = self._execute_one("SELECT * FROM jobs WHERE id = ?", (job_id,))
         if row:
             row["scope"] = json_loads(row["scope_json"]) or []
         return row
 
     def list_jobs(self) -> list[dict[str, Any]]:
+        """Return all synchronization jobs with source and target labels."""
         rows = self._execute(
             """
             SELECT jobs.*, sa.display_name AS source_name, ta.display_name AS target_name,
@@ -363,13 +421,14 @@ class Database:
             JOIN accounts sa ON sa.id = jobs.source_account_id
             JOIN accounts ta ON ta.id = jobs.target_account_id
             ORDER BY COALESCE(jobs.started_at, jobs.created_at) DESC, jobs.id DESC
-            """
+            """,
         )
         for row in rows:
             row["scope"] = json_loads(row["scope_json"]) or []
         return rows
 
     def list_incomplete_jobs(self) -> list[dict[str, Any]]:
+        """Return jobs that have not yet reached a terminal status."""
         terminal = (
             JobStatus.COMPLETED.value,
             JobStatus.COMPLETED_WITH_WARNINGS.value,
@@ -389,20 +448,27 @@ class Database:
         return rows
 
     def update_job(self, job_id: int, **fields: Any) -> None:
+        """Apply a partial update to a job row."""
         if not fields:
             return
         fields["updated_at"] = utcnow()
+        _validate_update_fields(fields, JOB_UPDATE_FIELDS, entity="job")
         assignments = ", ".join(f"{key} = ?" for key in fields)
-        params = tuple(fields.values()) + (job_id,)
-        self._write(f"UPDATE jobs SET {assignments} WHERE id = ?", params)
+        params = (*fields.values(), job_id)
+        query = f"UPDATE jobs SET {assignments} WHERE id = ?"  # noqa: S608 - keys validated against JOB_UPDATE_FIELDS
+        self._write(query, params)
 
     def increment_job_counter(self, job_id: int, column: str, amount: int = 1) -> None:
-        self._write(
-            f"""
+        """Increment a numeric progress counter on a job."""
+        if column not in JOB_COUNTER_FIELDS:
+            raise ValueError(f"Unsupported job counter column: {column}")
+        query = f"""
             UPDATE jobs
             SET {column} = {column} + ?, updated_at = ?
             WHERE id = ?
-            """,
+            """  # noqa: S608 - column validated against JOB_COUNTER_FIELDS
+        self._write(
+            query,
             (amount, utcnow(), job_id),
         )
 
@@ -413,6 +479,7 @@ class Database:
         message: str,
         detail: dict[str, Any] | None = None,
     ) -> int:
+        """Append an event to a job's event stream and return its ID."""
         now = utcnow()
         return self._write(
             """
@@ -423,6 +490,7 @@ class Database:
         )
 
     def list_events(self, job_id: int, *, after_id: int = 0) -> list[dict[str, Any]]:
+        """Return job events created after the provided event ID."""
         rows = self._execute(
             """
             SELECT * FROM events
@@ -450,9 +518,8 @@ class Database:
         order_index: int | None = None,
         page_cursor: str | None = None,
     ) -> tuple[int, bool]:
-        existing = self._execute_one(
-            "SELECT id FROM source_entities WHERE dedupe_key = ?", (dedupe_key,)
-        )
+        """Insert a source snapshot entity unless it already exists."""
+        existing = self._execute_one("SELECT id FROM source_entities WHERE dedupe_key = ?", (dedupe_key,))
         if existing:
             return int(existing["id"]), False
         entity_id = self._write(
@@ -486,6 +553,7 @@ class Database:
         collection_kind: str | None = None,
         parent_source_id: int | None = None,
     ) -> list[dict[str, Any]]:
+        """Return stored source entities filtered by collection and parent."""
         query = "SELECT * FROM source_entities WHERE job_id = ?"
         params: list[Any] = [job_id]
         if collection_kind is not None:
@@ -510,6 +578,7 @@ class Database:
         collection_kind: str | None = None,
         parent_source_id: int | None = None,
     ) -> int:
+        """Count stored source entities for a job and optional parent."""
         query = "SELECT COUNT(*) AS count FROM source_entities WHERE job_id = ?"
         params: list[Any] = [job_id]
         if collection_kind is not None:
@@ -534,6 +603,7 @@ class Database:
         confidence: float,
         match_method: str,
     ) -> None:
+        """Insert or update a cached mapping between source and target items."""
         now = utcnow()
         existing = self._execute_one(
             """
@@ -578,6 +648,7 @@ class Database:
         source_fingerprint: str,
         target_kind: str,
     ) -> dict[str, Any] | None:
+        """Return a cached mapping for a source fingerprint and target kind."""
         return self._execute_one(
             """
             SELECT * FROM entity_mappings
@@ -600,10 +671,9 @@ class Database:
         last_error: str | None = None,
         cooldown_until: str | None = None,
     ) -> tuple[int, bool]:
+        """Insert or update a synchronization task and return its ID plus creation flag."""
         now = utcnow()
-        existing = self._execute_one(
-            "SELECT id FROM tasks WHERE dedupe_key = ?", (dedupe_key,)
-        )
+        existing = self._execute_one("SELECT id FROM tasks WHERE dedupe_key = ?", (dedupe_key,))
         if existing:
             self._write(
                 """
@@ -647,14 +717,14 @@ class Database:
         return task_id, True
 
     def get_task_by_dedupe_key(self, dedupe_key: str) -> dict[str, Any] | None:
-        row = self._execute_one(
-            "SELECT * FROM tasks WHERE dedupe_key = ?", (dedupe_key,)
-        )
+        """Return a task looked up by its deduplication key."""
+        row = self._execute_one("SELECT * FROM tasks WHERE dedupe_key = ?", (dedupe_key,))
         if row:
             row["payload"] = json_loads(row["payload_json"])
         return row
 
     def list_tasks(self, job_id: int) -> list[dict[str, Any]]:
+        """Return all tasks associated with a job."""
         rows = self._execute(
             "SELECT * FROM tasks WHERE job_id = ? ORDER BY id ASC",
             (job_id,),
@@ -664,12 +734,15 @@ class Database:
         return rows
 
     def update_task(self, task_id: int, **fields: Any) -> None:
+        """Apply a partial update to a task row."""
         if not fields:
             return
         fields["updated_at"] = utcnow()
+        _validate_update_fields(fields, TASK_UPDATE_FIELDS, entity="task")
         assignments = ", ".join(f"{key} = ?" for key in fields)
-        params = tuple(fields.values()) + (task_id,)
-        self._write(f"UPDATE tasks SET {assignments} WHERE id = ?", params)
+        params = (*fields.values(), task_id)
+        query = f"UPDATE tasks SET {assignments} WHERE id = ?"  # noqa: S608 - keys validated against TASK_UPDATE_FIELDS
+        self._write(query, params)
 
     def set_cooldown(
         self,
@@ -680,16 +753,26 @@ class Database:
         reason: str,
         vendor_hint: str | None = None,
     ) -> None:
+        """Record a service cooldown for a specific account and operation."""
         now = utcnow()
         self._write(
             """
-            INSERT INTO service_cooldowns(account_id, operation, cooldown_until, reason, vendor_hint, created_at, updated_at)
+            INSERT INTO service_cooldowns(
+                account_id,
+                operation,
+                cooldown_until,
+                reason,
+                vendor_hint,
+                created_at,
+                updated_at
+            )
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (account_id, operation, cooldown_until, reason, vendor_hint, now, now),
         )
 
     def get_latest_cooldown(self, account_id: int) -> dict[str, Any] | None:
+        """Return the most recent cooldown recorded for an account."""
         return self._execute_one(
             """
             SELECT * FROM service_cooldowns

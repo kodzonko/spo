@@ -1,3 +1,5 @@
+"""Inline Jinja templates used by the bundled web UI."""
+
 from __future__ import annotations
 
 TEMPLATES: dict[str, str] = {

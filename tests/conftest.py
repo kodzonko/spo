@@ -1,6 +1,8 @@
+"""Shared pytest fixtures for spo tests."""
+
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -10,9 +12,13 @@ from spo.persistence import Database
 from spo.sync import JobRunner, ServiceRegistry, SyncEngine
 from tests.fakes import FakeSpotifyAdapter, FakeYouTubeMusicAdapter
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
 
 @pytest.fixture(autouse=True)
 def reset_fake_state():
+    """Reset fake adapter state before each test."""
     FakeSpotifyAdapter.STATE = {}
     FakeYouTubeMusicAdapter.STATE = {}
     yield
@@ -22,6 +28,7 @@ def reset_fake_state():
 
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
+    """Provide isolated application settings for tests."""
     return Settings(
         bind_host="127.0.0.1",
         bind_port=8899,
@@ -33,6 +40,7 @@ def settings(tmp_path: Path) -> Settings:
 
 @pytest.fixture
 def app_state(settings: Settings) -> AppState:
+    """Provide a fully wired application state backed by fakes."""
     db = Database(settings.db_path)
     db.initialize()
     registry = ServiceRegistry(settings)

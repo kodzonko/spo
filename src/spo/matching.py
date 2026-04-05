@@ -1,3 +1,5 @@
+"""Normalization and fuzzy matching helpers for cross-service catalog items."""
+
 from __future__ import annotations
 
 import re
@@ -16,6 +18,8 @@ SPACE_PATTERN = re.compile(r"\s+")
 
 @dataclass(slots=True)
 class MatchResult:
+    """The outcome of matching one source item against target candidates."""
+
     candidate: dict[str, Any] | None
     score: float
     gap: float
@@ -24,15 +28,13 @@ class MatchResult:
 
 
 def normalize_text(value: str | None) -> str:
+    """Normalize text for fuzzy comparisons across service payloads."""
     if not value:
         return ""
-    normalized = (
-        unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
-    )
+    normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
     normalized = FEAT_PATTERN.sub("", normalized.lower().replace("&", " and "))
     normalized = PUNCT_PATTERN.sub(" ", normalized)
-    normalized = SPACE_PATTERN.sub(" ", normalized).strip()
-    return normalized
+    return SPACE_PATTERN.sub(" ", normalized).strip()
 
 
 def _parse_duration_ms(value: Any) -> int | None:
@@ -116,16 +118,9 @@ def _extract_external_ids(raw: dict[str, Any]) -> dict[str, str]:
     return result
 
 
-def canonicalize(
-    service: Service, kind: CollectionKind, source_id: str, raw: dict[str, Any]
-) -> CanonicalWork:
-    title = (
-        raw.get("title")
-        or raw.get("name")
-        or raw.get("series")
-        or raw.get("channel")
-        or ""
-    )
+def canonicalize(service: Service, kind: CollectionKind, source_id: str, raw: dict[str, Any]) -> CanonicalWork:
+    """Build a canonical representation of a service payload."""
+    title = raw.get("title") or raw.get("name") or raw.get("series") or raw.get("channel") or ""
     primary_creators = _extract_artists(raw)
     container_title = _extract_container_title(raw)
     work = CanonicalWork(
@@ -136,9 +131,7 @@ def canonicalize(
         primary_creators=primary_creators,
         secondary_creators=[],
         container_title=container_title,
-        duration_ms=_parse_duration_ms(
-            raw.get("duration_ms") or raw.get("duration") or raw.get("length")
-        ),
+        duration_ms=_parse_duration_ms(raw.get("duration_ms") or raw.get("duration") or raw.get("length")),
         year=_extract_year(raw),
         explicit=raw.get("explicit"),
         external_ids=_extract_external_ids(raw),
@@ -149,22 +142,21 @@ def canonicalize(
             normalize_text(work.title),
             ",".join(sorted(normalize_text(value) for value in work.primary_creators)),
             normalize_text(work.container_title),
-        ]
+        ],
     )
     work.fingerprint = stable_hash(fingerprint_seed)
     return work
 
 
 def work_similarity(left: CanonicalWork, right: CanonicalWork) -> float:
+    """Score how closely two canonical works represent the same media."""
     if left.external_ids and right.external_ids:
         shared_keys = set(left.external_ids).intersection(right.external_ids)
         for key in shared_keys:
             if left.external_ids[key] == right.external_ids[key]:
                 return 1.0
 
-    title_score = SequenceMatcher(
-        None, normalize_text(left.title), normalize_text(right.title)
-    ).ratio()
+    title_score = SequenceMatcher(None, normalize_text(left.title), normalize_text(right.title)).ratio()
     creator_score = SequenceMatcher(
         None,
         " ".join(sorted(normalize_text(value) for value in left.primary_creators)),
@@ -200,11 +192,16 @@ def work_similarity(left: CanonicalWork, right: CanonicalWork) -> float:
     )
 
 
-def choose_best_match(
-    source: CanonicalWork, candidates: list[dict[str, Any]], target_service: Service
-) -> MatchResult:
+def choose_best_match(source: CanonicalWork, candidates: list[dict[str, Any]], target_service: Service) -> MatchResult:
+    """Select the best acceptable candidate for a source work."""
     if not candidates:
-        return MatchResult(None, 0.0, 0.0, False, "no_candidates")
+        return MatchResult(
+            candidate=None,
+            score=0.0,
+            gap=0.0,
+            accepted=False,
+            method="no_candidates",
+        )
 
     scored: list[tuple[float, dict[str, Any], CanonicalWork]] = []
     for candidate in candidates:
@@ -214,26 +211,26 @@ def choose_best_match(
             or candidate.get("playlistId")
             or candidate.get("browseId")
             or candidate.get("channelId")
-            or ""
+            or "",
         )
         if not candidate_id:
             continue
-        candidate_work = canonicalize(
-            target_service, source.kind, candidate_id, candidate
-        )
-        scored.append(
-            (work_similarity(source, candidate_work), candidate, candidate_work)
-        )
+        candidate_work = canonicalize(target_service, source.kind, candidate_id, candidate)
+        scored.append((work_similarity(source, candidate_work), candidate, candidate_work))
 
     if not scored:
-        return MatchResult(None, 0.0, 0.0, False, "invalid_candidates")
+        return MatchResult(
+            candidate=None,
+            score=0.0,
+            gap=0.0,
+            accepted=False,
+            method="invalid_candidates",
+        )
 
     scored.sort(key=lambda item: item[0], reverse=True)
     best_score, best_candidate, _ = scored[0]
     second_score = scored[1][0] if len(scored) > 1 else 0.0
-    accepted = best_score >= 0.80 or (
-        best_score >= 0.65 and best_score - second_score >= 0.10
-    )
+    accepted = best_score >= 0.80 or (best_score >= 0.65 and best_score - second_score >= 0.10)
     return MatchResult(
         candidate=best_candidate,
         score=best_score,
@@ -244,6 +241,7 @@ def choose_best_match(
 
 
 def playlist_name_match_score(source_name: str, target_name: str) -> float:
+    """Score how closely two playlist names match after normalization."""
     left = normalize_text(source_name)
     right = normalize_text(target_name)
     if left == right:

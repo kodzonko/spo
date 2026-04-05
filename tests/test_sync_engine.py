@@ -1,3 +1,5 @@
+"""Tests for synchronization engine behavior."""
+
 from spo.exceptions import RateLimitError
 from spo.models import CollectionKind, CredentialType, JobStatus, Service
 from spo.utils import utcnow
@@ -5,6 +7,7 @@ from tests.fakes import FakeSpotifyAdapter, FakeYouTubeMusicAdapter
 
 
 def test_sync_engine_skips_existing_items_and_resumes_without_duplicates(app_state):
+    """Test that sync skips existing items and does not duplicate them on resume."""
     source_state = {
         "identity": {
             "remote_account_id": "spotify-src",
@@ -26,7 +29,7 @@ def test_sync_engine_skips_existing_items_and_resumes_without_duplicates(app_sta
                     "album": {"name": "Album Two"},
                     "duration_ms": 200000,
                 },
-            ]
+            ],
         },
         "playlist_items": {},
         "search": {},
@@ -45,8 +48,8 @@ def test_sync_engine_skips_existing_items_and_resumes_without_duplicates(app_sta
                     "artists": [{"name": "Artist One"}],
                     "album": {"name": "Album One"},
                     "duration": "3:00",
-                }
-            ]
+                },
+            ],
         },
         "playlist_items": {},
         "search": {
@@ -57,8 +60,8 @@ def test_sync_engine_skips_existing_items_and_resumes_without_duplicates(app_sta
                     "artists": [{"name": "Artist Two"}],
                     "album": {"name": "Different Release"},
                     "duration": "3:20",
-                }
-            ]
+                },
+            ],
         },
         "catalog": {
             CollectionKind.SAVED_TRACK.value: {
@@ -76,7 +79,7 @@ def test_sync_engine_skips_existing_items_and_resumes_without_duplicates(app_sta
                     "album": {"name": "Different Release"},
                     "duration": "3:20",
                 },
-            }
+            },
         },
     }
     FakeSpotifyAdapter.STATE["source"] = source_state
@@ -129,6 +132,7 @@ def test_sync_engine_skips_existing_items_and_resumes_without_duplicates(app_sta
 def test_playlist_sync_merges_into_existing_playlist_and_preserves_target_only_items(
     app_state,
 ):
+    """Test that playlist sync merges without removing target-only items."""
     source_state = {
         "identity": {
             "remote_account_id": "spotify-src",
@@ -140,8 +144,8 @@ def test_playlist_sync_merges_into_existing_playlist_and_preserves_target_only_i
                     "id": "sp-playlist-1",
                     "name": "Road Trip",
                     "description": "High mileage songs",
-                }
-            ]
+                },
+            ],
         },
         "playlist_items": {
             "sp-playlist-1": [
@@ -166,7 +170,7 @@ def test_playlist_sync_merges_into_existing_playlist_and_preserves_target_only_i
                     "album": {"name": "Album Two"},
                     "duration_ms": 201000,
                 },
-            ]
+            ],
         },
         "search": {},
         "catalog": {},
@@ -177,9 +181,7 @@ def test_playlist_sync_merges_into_existing_playlist_and_preserves_target_only_i
             "display_name": "Target YT Music",
         },
         "collections": {
-            CollectionKind.PLAYLIST.value: [
-                {"id": "yt-playlist-1", "name": "Road Trip", "description": "Existing"}
-            ]
+            CollectionKind.PLAYLIST.value: [{"id": "yt-playlist-1", "name": "Road Trip", "description": "Existing"}],
         },
         "playlist_items": {
             "yt-playlist-1": [
@@ -189,8 +191,8 @@ def test_playlist_sync_merges_into_existing_playlist_and_preserves_target_only_i
                     "artists": [{"name": "Artist One"}],
                     "album": {"name": "Album One"},
                     "duration": "3:00",
-                }
-            ]
+                },
+            ],
         },
         "search": {
             CollectionKind.SAVED_TRACK.value: [
@@ -208,7 +210,7 @@ def test_playlist_sync_merges_into_existing_playlist_and_preserves_target_only_i
                     "album": {"name": "Compilation"},
                     "duration": "3:21",
                 },
-            ]
+            ],
         },
         "catalog": {
             CollectionKind.SAVED_TRACK.value: {
@@ -226,7 +228,7 @@ def test_playlist_sync_merges_into_existing_playlist_and_preserves_target_only_i
                     "album": {"name": "Compilation"},
                     "duration": "3:21",
                 },
-            }
+            },
         },
     }
     FakeSpotifyAdapter.STATE["source"] = source_state
@@ -267,13 +269,12 @@ def test_playlist_sync_merges_into_existing_playlist_and_preserves_target_only_i
     assert job is not None
     assert job["status"] == JobStatus.COMPLETED_WITH_WARNINGS.value
     assert target_state.get("created_playlists", []) == []
-    assert target_state["playlist_add_calls"] == [
-        ("yt-playlist-1", ["yt-track-1", "yt-track-2"])
-    ]
+    assert target_state["playlist_add_calls"] == [("yt-playlist-1", ["yt-track-1", "yt-track-2"])]
     assert len(target_state["playlist_items"]["yt-playlist-1"]) == 3
 
 
 def test_rate_limited_job_pauses_then_auto_resumes(app_state):
+    """Test that rate-limited jobs pause and later auto-resume successfully."""
     source_state = {
         "identity": {
             "remote_account_id": "spotify-src",
@@ -287,8 +288,8 @@ def test_rate_limited_job_pauses_then_auto_resumes(app_state):
                     "artists": [{"name": "Artist Nine"}],
                     "album": {"name": "Album Nine"},
                     "duration_ms": 190000,
-                }
-            ]
+                },
+            ],
         },
         "playlist_items": {},
         "search": {},
@@ -309,8 +310,8 @@ def test_rate_limited_job_pauses_then_auto_resumes(app_state):
                     "artists": [{"name": "Artist Nine"}],
                     "album": {"name": "Album Nine"},
                     "duration": "3:10",
-                }
-            ]
+                },
+            ],
         },
         "catalog": {
             CollectionKind.SAVED_TRACK.value: {
@@ -320,8 +321,8 @@ def test_rate_limited_job_pauses_then_auto_resumes(app_state):
                     "artists": [{"name": "Artist Nine"}],
                     "album": {"name": "Album Nine"},
                     "duration": "3:10",
-                }
-            }
+                },
+            },
         },
         "save_tracks_effects": [RateLimitError("Slow down", retry_after=0)],
     }

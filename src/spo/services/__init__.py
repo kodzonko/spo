@@ -1,3 +1,5 @@
+"""Streaming service adapter implementations exposed by spo."""
+
 from spo.services.spotify import SpotifyAdapter
 from spo.services.ytmusic import YouTubeMusicAdapter
 

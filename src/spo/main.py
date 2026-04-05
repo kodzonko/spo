@@ -1,3 +1,5 @@
+"""CLI entrypoints for running the spo web application."""
+
 from __future__ import annotations
 
 import argparse
@@ -10,6 +12,7 @@ from spo.config import load_settings
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the command-line parser for the web entrypoint."""
     parser = argparse.ArgumentParser(prog="spo", description="Run the local web UI.")
     parser.add_argument("--host", default=None, help="Bind host override.")
     parser.add_argument("--port", default=None, type=int, help="Bind port override.")
@@ -17,6 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    """Run the spo web application with optional bind overrides."""
     argv = sys.argv[1:]
     if argv[:1] == ["web"]:
         argv = argv[1:]

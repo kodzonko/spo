@@ -1,15 +1,15 @@
+"""YouTube Music adapter implementation used by spo."""
+
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import requests
 from ytmusicapi import YTMusic
 from ytmusicapi.auth.oauth.credentials import OAuthCredentials
 from ytmusicapi.models.content.enums import LikeStatus
 
-from spo.config import Settings
 from spo.exceptions import (
     AuthenticationError,
     RateLimitError,
@@ -25,8 +25,15 @@ from spo.models import (
 from spo.services.base import StreamingServiceAdapter
 from spo.utils import chunked
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from spo.config import Settings
+
 
 class YouTubeMusicAdapter(StreamingServiceAdapter):
+    """Read and write supported collections through the YTMusic client."""
+
     service = Service.YTMUSIC
     _capabilities = AdapterCapabilities(
         readable=frozenset(
@@ -51,6 +58,7 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
     )
 
     def __init__(self, *, account_id: int, credential_payload: dict[str, Any], settings: Settings) -> None:
+        """Initialize the YouTube Music adapter for a stored account."""
         super().__init__(
             account_id=account_id,
             credential_payload=credential_payload,
@@ -61,6 +69,7 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
 
     @property
     def capabilities(self) -> AdapterCapabilities:
+        """Return the collection operations supported by YouTube Music."""
         return self._capabilities
 
     def _auth_file_path(self) -> Path:
@@ -70,6 +79,7 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
 
     @property
     def persisted_payload(self) -> dict[str, Any]:
+        """Return credentials, including refreshed OAuth token data when available."""
         if self.credential_payload.get("credential_type") != "ytmusic_oauth":
             return self.credential_payload
 
@@ -136,6 +146,7 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
             raise
 
     def authenticate(self) -> AccountIdentity:
+        """Validate credentials and return the authenticated YouTube Music account."""
         client = self._ensure_client()
         if self._identity is None:
             self._call(client.get_library_playlists, limit=1)
@@ -152,6 +163,7 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
         return Page(items=items[offset:next_offset], next_cursor=next_cursor)
 
     def list_collection(self, kind: CollectionKind, cursor: str | None = None, page_size: int = 50) -> Page:
+        """Return a page of YouTube Music library items for the requested kind."""
         client = self._ensure_client()
         if kind == CollectionKind.PLAYLIST:
             items = self._call(client.get_library_playlists, limit=None)
@@ -179,12 +191,14 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
         raise ValueError(f"Unsupported YouTube Music collection: {kind}")
 
     def get_playlist_items(self, playlist_id: str, cursor: str | None = None, page_size: int = 100) -> Page:
+        """Return a page of items from a YouTube Music playlist."""
         client = self._ensure_client()
         payload = self._call(client.get_playlist, playlist_id, limit=None)
         items = payload.get("tracks", []) if isinstance(payload, dict) else []
         return self._slice(items, cursor, page_size)
 
     def search(self, kind: CollectionKind, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        """Search YouTube Music for catalog items matching the query."""
         client = self._ensure_client()
         filter_value = {
             CollectionKind.SAVED_TRACK: "songs",
@@ -200,6 +214,7 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
         return payload
 
     def create_playlist(self, name: str, description: str = "") -> dict[str, Any]:
+        """Create a private YouTube Music playlist."""
         client = self._ensure_client()
         playlist_id = self._call(
             client.create_playlist,
@@ -212,25 +227,34 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
         return {"id": str(playlist_id), "name": name}
 
     def add_playlist_items(self, playlist_id: str, item_ids: list[str]) -> None:
+        """Append items to a YouTube Music playlist in API-sized batches."""
         client = self._ensure_client()
         for batch in chunked(item_ids, 100):
             self._call(client.add_playlist_items, playlist_id, batch, duplicates=True)
 
     def save_tracks(self, item_ids: list[str]) -> None:
+        """Like tracks in the current YouTube Music library."""
         client = self._ensure_client()
         for item_id in item_ids:
             self._call(client.rate_song, item_id, LikeStatus.LIKE)
 
     def save_albums(self, item_ids: list[str]) -> None:
+        """Raise because album writes are not supported for YouTube Music in v1."""
+        del item_ids
         raise UnsupportedOperationError("YouTube Music album writes are not supported in v1.")
 
     def follow_artists(self, item_ids: list[str]) -> None:
+        """Subscribe to artists in API-sized batches."""
         client = self._ensure_client()
         for batch in chunked(item_ids, 25):
             self._call(client.subscribe_artists, batch)
 
     def save_podcasts(self, item_ids: list[str]) -> None:
+        """Raise because podcast writes are not supported for YouTube Music in v1."""
+        del item_ids
         raise UnsupportedOperationError("YouTube Music podcast writes are not supported in v1.")
 
     def save_episodes(self, item_ids: list[str]) -> None:
+        """Raise because episode writes are not supported for YouTube Music in v1."""
+        del item_ids
         raise UnsupportedOperationError("YouTube Music episode writes are not supported in v1.")

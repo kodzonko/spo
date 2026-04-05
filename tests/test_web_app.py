@@ -1,4 +1,7 @@
+"""Tests for the FastAPI web application flows."""
+
 import pytest
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from spo.app import create_app
@@ -8,6 +11,7 @@ from tests.fakes import FakeSpotifyAdapter, FakeYouTubeMusicAdapter
 
 
 def test_web_app_renders_pages_and_creates_job(app_state):
+    """Test that the web app renders core pages and creates jobs."""
     FakeSpotifyAdapter.STATE["source"] = {
         "identity": {
             "remote_account_id": "spotify-src",
@@ -86,6 +90,7 @@ def test_web_app_renders_pages_and_creates_job(app_state):
 
 
 def test_web_app_can_save_and_validate_ytmusic_connection(app_state):
+    """Test that YouTube Music headers can be saved and validated."""
     FakeYouTubeMusicAdapter.STATE["connect"] = {
         "identity": {
             "remote_account_id": "yt-connected",
@@ -130,6 +135,7 @@ def test_web_app_can_save_and_validate_ytmusic_connection(app_state):
 
 
 def test_web_app_can_start_and_complete_ytmusic_oauth_connection(app_state, monkeypatch):
+    """Test that the YouTube Music OAuth flow can complete successfully."""
     FakeYouTubeMusicAdapter.STATE["yt-oauth"] = {
         "identity": {
             "remote_account_id": "yt-oauth-account",
@@ -206,13 +212,14 @@ def test_web_app_can_start_and_complete_ytmusic_oauth_connection(app_state, monk
 
 
 def test_web_app_handles_spotify_connect_callback_and_event_stream(app_state, monkeypatch):
+    """Test that Spotify OAuth callbacks update accounts and expose job events."""
     app = create_app(app_state)
     client = TestClient(app)
 
-    def fake_build_authorize_url(settings, payload, state):
+    def fake_build_authorize_url(_settings, _payload, state):
         return f"https://spotify.example/authorize?state={state}"
 
-    def fake_exchange_code(*, settings, credential_payload, code):
+    def fake_exchange_code(*, _settings, credential_payload, code):
         assert code == "oauth-code"
         return {
             **credential_payload,
@@ -223,7 +230,7 @@ def test_web_app_handles_spotify_connect_callback_and_event_stream(app_state, mo
             },
         }
 
-    def fake_authenticate(self):
+    def fake_authenticate(_self):
         return AccountIdentity(
             remote_account_id="spotify-connected",
             display_name="Connected Spotify",
@@ -275,6 +282,7 @@ def test_web_app_handles_spotify_connect_callback_and_event_stream(app_state, mo
 
 
 def test_app_startup_can_auto_resume_jobs(app_state, monkeypatch):
+    """Test that app startup triggers auto-resume when enabled."""
     app_state.settings.auto_resume = True
     called = {"count": 0}
 
@@ -291,6 +299,7 @@ def test_app_startup_can_auto_resume_jobs(app_state, monkeypatch):
 
 @pytest.mark.anyio
 async def test_event_stream_endpoint_yields_existing_events(app_state, monkeypatch):
+    """Test that the event stream endpoint yields already stored events."""
     app = create_app(app_state)
     source_account_id = app_state.db.upsert_account(
         service=Service.SPOTIFY.value,
@@ -308,6 +317,7 @@ async def test_event_stream_endpoint_yields_existing_events(app_state, monkeypat
     app_state.db.append_event(job_id, "info", "hello stream")
 
     route = next(route for route in app.router.routes if getattr(route, "path", "") == "/api/jobs/{job_id}/events")
+    assert isinstance(route, APIRoute)
 
     class FakeRequest:
         def __init__(self):
@@ -323,8 +333,6 @@ async def test_event_stream_endpoint_yields_existing_events(app_state, monkeypat
     monkeypatch.setattr("spo.app.asyncio.sleep", immediate_sleep)
 
     response = await route.endpoint(FakeRequest(), job_id)
-    chunks = []
-    async for chunk in response.body_iterator:
-        chunks.append(chunk)
+    chunks = [chunk async for chunk in response.body_iterator]
 
     assert any("hello stream" in chunk for chunk in chunks)

@@ -1,8 +1,9 @@
+"""Fake streaming service adapters used by tests."""
+
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
-from spo.config import Settings
 from spo.exceptions import AuthenticationError
 from spo.models import (
     AccountIdentity,
@@ -13,27 +14,26 @@ from spo.models import (
 )
 from spo.services.base import StreamingServiceAdapter
 
+if TYPE_CHECKING:
+    from spo.config import Settings
+
 
 class _BaseFakeAdapter(StreamingServiceAdapter):
-    STATE: dict[str, dict[str, Any]] = {}
+    STATE: ClassVar[dict[str, dict[str, Any]]] = {}
     service: Service
     _capabilities = AdapterCapabilities(
         readable=frozenset(CollectionKind),
         writable=frozenset(CollectionKind),
     )
 
-    def __init__(
-        self, *, account_id: int, credential_payload: dict[str, Any], settings: Settings
-    ) -> None:
+    def __init__(self, *, account_id: int, credential_payload: dict[str, Any], settings: Settings) -> None:
         super().__init__(
             account_id=account_id,
             credential_payload=credential_payload,
             settings=settings,
         )
         payload_state_key = credential_payload.get("state_key")
-        if payload_state_key is None and isinstance(
-            credential_payload.get("data"), dict
-        ):
+        if payload_state_key is None and isinstance(credential_payload.get("data"), dict):
             payload_state_key = credential_payload["data"].get("state_key")
         self.state_key = str(payload_state_key)
         self.state = self.__class__.STATE[self.state_key]
@@ -46,27 +46,22 @@ class _BaseFakeAdapter(StreamingServiceAdapter):
             display_name=identity["display_name"],
         )
 
-    def list_collection(
-        self, kind: CollectionKind, cursor: str | None = None, page_size: int = 50
-    ) -> Page:
+    def list_collection(self, kind: CollectionKind, cursor: str | None = None, page_size: int = 50) -> Page:
         items = list(self.state["collections"].get(kind.value, []))
         offset = int(cursor or "0")
         next_offset = offset + page_size
         next_cursor = str(next_offset) if next_offset < len(items) else None
         return Page(items=items[offset:next_offset], next_cursor=next_cursor)
 
-    def get_playlist_items(
-        self, playlist_id: str, cursor: str | None = None, page_size: int = 100
-    ) -> Page:
+    def get_playlist_items(self, playlist_id: str, cursor: str | None = None, page_size: int = 100) -> Page:
         items = list(self.state["playlist_items"].get(playlist_id, []))
         offset = int(cursor or "0")
         next_offset = offset + page_size
         next_cursor = str(next_offset) if next_offset < len(items) else None
         return Page(items=items[offset:next_offset], next_cursor=next_cursor)
 
-    def search(
-        self, kind: CollectionKind, query: str, limit: int = 10
-    ) -> list[dict[str, Any]]:
+    def search(self, kind: CollectionKind, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        del query
         candidates = list(self.state["search"].get(kind.value, []))
         if candidates:
             return candidates[:limit]
@@ -74,11 +69,12 @@ class _BaseFakeAdapter(StreamingServiceAdapter):
 
     def create_playlist(self, name: str, description: str = "") -> dict[str, Any]:
         self._consume_effect("create_playlist_effects")
-        playlist_id = f"{self.state_key}-playlist-{len(self.state['collections'].setdefault(CollectionKind.PLAYLIST.value, [])) + 1}"
-        playlist = {"id": playlist_id, "name": name, "description": description}
-        self.state["collections"].setdefault(CollectionKind.PLAYLIST.value, []).append(
-            playlist
+        playlist_id = (
+            f"{self.state_key}-playlist-"
+            f"{len(self.state['collections'].setdefault(CollectionKind.PLAYLIST.value, [])) + 1}"
         )
+        playlist = {"id": playlist_id, "name": name, "description": description}
+        self.state["collections"].setdefault(CollectionKind.PLAYLIST.value, []).append(playlist)
         self.state["playlist_items"].setdefault(playlist_id, [])
         self.state.setdefault("created_playlists", []).append(playlist)
         return {"id": playlist_id, "name": name}
@@ -90,15 +86,11 @@ class _BaseFakeAdapter(StreamingServiceAdapter):
             raw = self._lookup_catalog_item(item_id)
             if raw is not None:
                 destination.append(raw)
-        self.state.setdefault("playlist_add_calls", []).append(
-            (playlist_id, list(item_ids))
-        )
+        self.state.setdefault("playlist_add_calls", []).append((playlist_id, list(item_ids)))
 
     def save_tracks(self, item_ids: list[str]) -> None:
         self._consume_effect("save_tracks_effects")
-        collection = self.state["collections"].setdefault(
-            CollectionKind.SAVED_TRACK.value, []
-        )
+        collection = self.state["collections"].setdefault(CollectionKind.SAVED_TRACK.value, [])
         for item_id in item_ids:
             raw = self._lookup_catalog_item(item_id)
             if raw is not None:
@@ -107,9 +99,7 @@ class _BaseFakeAdapter(StreamingServiceAdapter):
 
     def save_albums(self, item_ids: list[str]) -> None:
         self._consume_effect("save_albums_effects")
-        collection = self.state["collections"].setdefault(
-            CollectionKind.SAVED_ALBUM.value, []
-        )
+        collection = self.state["collections"].setdefault(CollectionKind.SAVED_ALBUM.value, [])
         for item_id in item_ids:
             raw = self._lookup_catalog_item(item_id)
             if raw is not None:
@@ -117,9 +107,7 @@ class _BaseFakeAdapter(StreamingServiceAdapter):
 
     def follow_artists(self, item_ids: list[str]) -> None:
         self._consume_effect("follow_artists_effects")
-        collection = self.state["collections"].setdefault(
-            CollectionKind.FOLLOWED_ARTIST.value, []
-        )
+        collection = self.state["collections"].setdefault(CollectionKind.FOLLOWED_ARTIST.value, [])
         for item_id in item_ids:
             raw = self._lookup_catalog_item(item_id)
             if raw is not None:
@@ -127,9 +115,7 @@ class _BaseFakeAdapter(StreamingServiceAdapter):
 
     def save_podcasts(self, item_ids: list[str]) -> None:
         self._consume_effect("save_podcasts_effects")
-        collection = self.state["collections"].setdefault(
-            CollectionKind.SAVED_PODCAST.value, []
-        )
+        collection = self.state["collections"].setdefault(CollectionKind.SAVED_PODCAST.value, [])
         for item_id in item_ids:
             raw = self._lookup_catalog_item(item_id)
             if raw is not None:
@@ -137,9 +123,7 @@ class _BaseFakeAdapter(StreamingServiceAdapter):
 
     def save_episodes(self, item_ids: list[str]) -> None:
         self._consume_effect("save_episodes_effects")
-        collection = self.state["collections"].setdefault(
-            CollectionKind.SAVED_EPISODE.value, []
-        )
+        collection = self.state["collections"].setdefault(CollectionKind.SAVED_EPISODE.value, [])
         for item_id in item_ids:
             raw = self._lookup_catalog_item(item_id)
             if raw is not None:
@@ -163,8 +147,12 @@ class _BaseFakeAdapter(StreamingServiceAdapter):
 
 
 class FakeSpotifyAdapter(_BaseFakeAdapter):
+    """Fake Spotify adapter backed by in-memory test state."""
+
     service = Service.SPOTIFY
 
 
 class FakeYouTubeMusicAdapter(_BaseFakeAdapter):
+    """Fake YouTube Music adapter backed by in-memory test state."""
+
     service = Service.YTMUSIC

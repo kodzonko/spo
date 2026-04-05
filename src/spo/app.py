@@ -1,3 +1,5 @@
+"""Application state, web factory, and route handlers for spo."""
+
 from __future__ import annotations
 
 import asyncio
@@ -5,11 +7,13 @@ import json
 import logging
 import secrets
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Annotated, Any
 from urllib.parse import quote_plus
 
+import requests
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import (
     HTMLResponse,
@@ -18,18 +22,22 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from jinja2 import DictLoader, Environment, select_autoescape
-from starlette.datastructures import UploadFile
+from spotipy.exceptions import SpotifyException, SpotifyOauthError
 from ytmusicapi.auth.oauth.credentials import OAuthCredentials
 from ytmusicapi.auth.oauth.exceptions import BadOAuthClient, UnauthorizedOAuthClient
+from ytmusicapi.exceptions import YTMusicServerError
 
 from spo.config import Settings, load_settings
-from spo.exceptions import AuthenticationError, ValidationError
+from spo.exceptions import AuthenticationError, RateLimitError, ValidationError
 from spo.models import CollectionKind, CredentialType, Service
 from spo.persistence import Database
 from spo.services.spotify import SpotifyAdapter, sanitize_redirect_uri
 from spo.sync import JobRunner, ServiceRegistry, SyncEngine
 from spo.utils import utcnow
 from spo.web.templates import TEMPLATES
+
+if TYPE_CHECKING:
+    from starlette.datastructures import UploadFile
 
 template_env = Environment(
     loader=DictLoader(TEMPLATES),
@@ -39,16 +47,20 @@ template_env = Environment(
 
 @dataclass(slots=True)
 class AppState:
+    """Shared application dependencies used by the web layer."""
+
     settings: Settings
     db: Database
     registry: ServiceRegistry
     engine: SyncEngine
     runner: JobRunner
-    pending_ytmusic_oauth: dict[str, "PendingYouTubeMusicOAuth"]
+    pending_ytmusic_oauth: dict[str, PendingYouTubeMusicOAuth]
 
 
 @dataclass(slots=True)
 class PendingYouTubeMusicOAuth:
+    """In-progress device-flow metadata for a YouTube Music connection."""
+
     account_id: int
     client_id: str
     client_secret: str
@@ -59,6 +71,7 @@ class PendingYouTubeMusicOAuth:
     expires_at: datetime
 
     def is_expired(self) -> bool:
+        """Return whether the pending OAuth flow has expired."""
         return datetime.now(UTC) >= self.expires_at
 
 
@@ -80,6 +93,7 @@ def _configure_logging(settings: Settings) -> None:
 
 
 def create_state(settings: Settings | None = None) -> AppState:
+    """Create the shared application state and initialize persistence."""
     resolved_settings = settings or load_settings()
     resolved_settings.app_data_dir.mkdir(parents=True, exist_ok=True)
     _configure_logging(resolved_settings)
@@ -99,6 +113,7 @@ def create_state(settings: Settings | None = None) -> AppState:
 
 
 def render_template(name: str, *, title: str, request: Request, **context: Any) -> HTMLResponse:
+    """Render a named page template inside the shared base layout."""
     body = template_env.get_template(name).render(**context)
     html = template_env.get_template("base.html").render(
         title=title,
@@ -194,14 +209,17 @@ def _get_pending_ytmusic_oauth(
 
 
 def create_app(state: AppState | None = None) -> FastAPI:
+    """Create the FastAPI application and register its routes."""
     app_state = state or create_state()
-    app = FastAPI(title="spo")
-    app.state.spo = app_state
 
-    @app.on_event("startup")
-    def startup() -> None:
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
         if app_state.settings.auto_resume:
             app_state.runner.auto_resume()
+        yield
+
+    app = FastAPI(title="spo", lifespan=lifespan)
+    app.state.spo = app_state
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard(request: Request) -> HTMLResponse:
@@ -226,9 +244,9 @@ def create_app(state: AppState | None = None) -> FastAPI:
 
     @app.post("/api/connections/spotify")
     async def save_spotify_connection(
-        client_id: str = Form(...),
-        client_secret: str = Form(...),
-        redirect_uri: str | None = Form(default=None),
+        client_id: Annotated[str, Form()],
+        client_secret: Annotated[str, Form()],
+        redirect_uri: Annotated[str | None, Form()] = None,
     ) -> RedirectResponse:
         redirect_uri = sanitize_redirect_uri(redirect_uri, app_state.settings)
         oauth_state = secrets.token_urlsafe(24)
@@ -265,8 +283,9 @@ def create_app(state: AppState | None = None) -> FastAPI:
         error: str | None = None,
     ) -> RedirectResponse:
         if error:
+            error_message = f"Spotify authorization failed: {error}"
             return RedirectResponse(
-                f"/connections?error={quote_plus(f'Spotify authorization failed: {error}')}",
+                f"/connections?error={quote_plus(error_message)}",
                 status_code=303,
             )
         if not code or not state:
@@ -298,9 +317,16 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 settings=app_state.settings,
             )
             identity = adapter.authenticate()
-        except Exception as exc:
+        except (
+            AuthenticationError,
+            RateLimitError,
+            SpotifyException,
+            SpotifyOauthError,
+            requests.RequestException,
+        ) as exc:
+            error_message = f"Spotify authorization failed: {exc}"
             return RedirectResponse(
-                f"/connections?error={quote_plus(f'Spotify authorization failed: {exc}')}",
+                f"/connections?error={quote_plus(error_message)}",
                 status_code=303,
             )
         app_state.db.save_credentials(
@@ -324,7 +350,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
 
     @app.post("/api/connections/ytmusic")
     async def save_ytmusic_connection(
-        headers_json: str | None = Form(default=None),
+        headers_json: Annotated[str | None, Form()] = None,
     ) -> RedirectResponse:
         try:
             payload: dict[str, Any]
@@ -380,8 +406,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
 
     @app.post("/api/connections/ytmusic/oauth/start")
     async def start_ytmusic_connection(
-        client_id: str = Form(...),
-        client_secret: str = Form(...),
+        client_id: Annotated[str, Form()],
+        client_secret: Annotated[str, Form()],
     ) -> RedirectResponse:
         try:
             resolved_client_id = client_id.strip()
@@ -436,11 +462,12 @@ def create_app(state: AppState | None = None) -> FastAPI:
     async def ytmusic_oauth_status(flow_id: str) -> JSONResponse:
         flow = _get_pending_ytmusic_oauth(app_state, flow_id)
         if flow is None:
+            message = "YouTube Music authorization expired. Start the connection again."
             return JSONResponse(
                 {
                     "status": "expired",
-                    "message": "YouTube Music authorization expired. Start the connection again.",
-                    "redirect_url": "/connections?error=YouTube Music authorization expired. Start the connection again.",
+                    "message": message,
+                    "redirect_url": f"/connections?error={quote_plus(message)}",
                 },
                 status_code=410,
             )
@@ -449,15 +476,16 @@ def create_app(state: AppState | None = None) -> FastAPI:
             token_response = OAuthCredentials(flow.client_id, flow.client_secret).token_from_code(flow.device_code)
         except (BadOAuthClient, UnauthorizedOAuthClient) as exc:
             app_state.pending_ytmusic_oauth.pop(flow_id, None)
+            message = f"YouTube Music OAuth setup failed: {exc}"
             return JSONResponse(
                 {
                     "status": "error",
-                    "message": f"YouTube Music OAuth setup failed: {exc}",
-                    "redirect_url": f"/connections?error={quote_plus(f'YouTube Music OAuth setup failed: {exc}')}",
+                    "message": message,
+                    "redirect_url": f"/connections?error={quote_plus(message)}",
                 },
                 status_code=400,
             )
-        except Exception as exc:  # pragma: no cover - network and library internals
+        except (YTMusicServerError, requests.RequestException, ValueError) as exc:
             return JSONResponse(
                 {
                     "status": "error",

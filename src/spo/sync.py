@@ -1,14 +1,14 @@
+"""Synchronization orchestration for moving libraries between services."""
+
 from __future__ import annotations
 
 import logging
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from spo.config import Settings
 from spo.exceptions import (
     AuthenticationError,
     RateLimitError,
@@ -22,25 +22,32 @@ from spo.matching import (
     playlist_name_match_score,
 )
 from spo.models import CanonicalWork, CollectionKind, JobStatus, Service, TaskState
-from spo.persistence import Database
 from spo.services import SpotifyAdapter, YouTubeMusicAdapter
-from spo.services.base import StreamingServiceAdapter
 from spo.utils import json_dumps, stable_hash, utcnow
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from spo.config import Settings
+    from spo.persistence import Database
+    from spo.services.base import StreamingServiceAdapter
 
 logger = logging.getLogger(__name__)
 
 
 class ServiceRegistry:
+    """Factory registry for instantiating service adapters."""
+
     def __init__(self, settings: Settings):
+        """Initialize the registry with built-in adapter factories."""
         self.settings = settings
         self._factories: dict[Service, type[StreamingServiceAdapter]] = {
             Service.SPOTIFY: SpotifyAdapter,
             Service.YTMUSIC: YouTubeMusicAdapter,
         }
 
-    def register(
-        self, service: Service, factory: type[StreamingServiceAdapter]
-    ) -> None:
+    def register(self, service: Service, factory: type[StreamingServiceAdapter]) -> None:
+        """Register an adapter factory for a service."""
         self._factories[service] = factory
 
     def create(
@@ -50,6 +57,7 @@ class ServiceRegistry:
         account_id: int,
         credential_payload: dict[str, Any],
     ) -> StreamingServiceAdapter:
+        """Create a configured adapter instance for the requested service."""
         factory = self._factories.get(service)
         if factory is None:
             raise ValueError(f"No adapter registered for service {service.value}")
@@ -61,6 +69,7 @@ class ServiceRegistry:
 
 
 def remote_item_id(raw: dict[str, Any]) -> str:
+    """Extract the primary identifier from a service payload."""
     for key in ("id", "videoId", "playlistId", "browseId", "channelId"):
         value = raw.get(key)
         if value:
@@ -72,16 +81,15 @@ def remote_item_id(raw: dict[str, Any]) -> str:
 
 
 def playlist_child_kind(raw: dict[str, Any]) -> CollectionKind:
+    """Infer the collection kind represented by a playlist child payload."""
     item_type = str(raw.get("type") or raw.get("resultType") or "").lower()
-    if (
-        "episode" in item_type
-        or raw.get("videoType") == "MUSIC_VIDEO_TYPE_PODCAST_EPISODE"
-    ):
+    if "episode" in item_type or raw.get("videoType") == "MUSIC_VIDEO_TYPE_PODCAST_EPISODE":
         return CollectionKind.SAVED_EPISODE
     return CollectionKind.SAVED_TRACK
 
 
 def build_queries(work: CanonicalWork) -> list[str]:
+    """Build deduplicated search queries for matching a canonical work."""
     creators = " ".join(work.primary_creators[:2]).strip()
     queries = []
     if creators:
@@ -100,12 +108,16 @@ def build_queries(work: CanonicalWork) -> list[str]:
 
 
 class SyncEngine:
+    """Execute synchronization jobs between a source and target service."""
+
     def __init__(self, db: Database, settings: Settings, registry: ServiceRegistry):
+        """Initialize the synchronization engine with its dependencies."""
         self.db = db
         self.settings = settings
         self.registry = registry
 
     def run_job(self, job_id: int, is_cancelled: Callable[[], bool]) -> None:
+        """Run a synchronization job until completion, pause, or failure."""
         job = self.db.get_job(job_id)
         if not job:
             raise ValueError(f"Unknown job {job_id}")
@@ -207,13 +219,9 @@ class SyncEngine:
                     current_collection_kind=kind.value,
                 )
                 if not target_adapter.capabilities.can_write(kind):
-                    count = self.db.count_source_entities(
-                        job_id, collection_kind=kind.value
-                    )
+                    count = self.db.count_source_entities(job_id, collection_kind=kind.value)
                     if count:
-                        self.db.increment_job_counter(
-                            job_id, "progress_skipped_count", count
-                        )
+                        self.db.increment_job_counter(job_id, "progress_skipped_count", count)
                     self._skip_collection(
                         job_id,
                         kind,
@@ -222,19 +230,14 @@ class SyncEngine:
                     continue
 
                 if kind == CollectionKind.PLAYLIST:
-                    self._apply_playlists(
-                        job_id, source_adapter, target_adapter, is_cancelled
-                    )
+                    self._apply_playlists(job_id, source_adapter, target_adapter, is_cancelled)
                 else:
-                    self._apply_library_collection(
-                        job_id, source_adapter, target_adapter, kind, is_cancelled
-                    )
+                    self._apply_library_collection(job_id, source_adapter, target_adapter, kind, is_cancelled)
 
             final_job = self.db.get_job(job_id)
             status = JobStatus.COMPLETED.value
             if final_job and (
-                int(final_job["progress_skipped_count"]) > 0
-                or int(final_job["progress_failed_count"]) > 0
+                int(final_job["progress_skipped_count"]) > 0 or int(final_job["progress_failed_count"]) > 0
             ):
                 status = JobStatus.COMPLETED_WITH_WARNINGS.value
             self.db.update_job(
@@ -257,16 +260,11 @@ class SyncEngine:
         except RateLimitError as exc:
             retry_after_seconds = int(float(exc.retry_after or 3600))
             cooldown_until = (
-                (datetime.now(UTC) + timedelta(seconds=retry_after_seconds))
-                .replace(microsecond=0)
-                .isoformat()
+                (datetime.now(UTC) + timedelta(seconds=retry_after_seconds)).replace(microsecond=0).isoformat()
             )
             account_id = int(target_account["id"])
             job_state = self.db.get_job(job_id)
-            if (
-                job_state is not None
-                and job_state["phase"] == JobStatus.SNAPSHOTTING.value
-            ):
+            if job_state is not None and job_state["phase"] == JobStatus.SNAPSHOTTING.value:
                 account_id = int(source_account["id"])
             self.db.set_cooldown(
                 account_id=account_id,
@@ -324,13 +322,9 @@ class SyncEngine:
                 return
             page = adapter.list_collection(kind, cursor=cursor, page_size=50)
             for raw in page.items:
-                entity_id = self._store_entity(
-                    job_id, adapter.service, kind, raw, cursor
-                )
+                entity_id = self._store_entity(job_id, adapter.service, kind, raw, cursor)
                 if kind == CollectionKind.PLAYLIST and entity_id:
-                    self._snapshot_playlist_items(
-                        job_id, adapter, entity_id, raw, is_cancelled
-                    )
+                    self._snapshot_playlist_items(job_id, adapter, entity_id, raw, is_cancelled)
             if page.next_cursor is None:
                 break
             cursor = page.next_cursor
@@ -402,7 +396,9 @@ class SyncEngine:
         return entity_id
 
     def _build_existing_index(
-        self, target: StreamingServiceAdapter, kind: CollectionKind
+        self,
+        target: StreamingServiceAdapter,
+        kind: CollectionKind,
     ) -> tuple[list[dict[str, Any]], Counter[str]]:
         effective_kind = (
             CollectionKind.SAVED_TRACK
@@ -417,9 +413,7 @@ class SyncEngine:
             except ValueError:
                 continue
             item_kind = kind if kind == CollectionKind.PLAYLIST else effective_kind
-            fingerprints[
-                canonicalize(target.service, item_kind, item_id, item).fingerprint
-            ] += 1
+            fingerprints[canonicalize(target.service, item_kind, item_id, item).fingerprint] += 1
         return items, fingerprints
 
     def _apply_library_collection(
@@ -430,9 +424,7 @@ class SyncEngine:
         kind: CollectionKind,
         is_cancelled: Callable[[], bool],
     ) -> None:
-        source_entities = self.db.list_source_entities(
-            job_id, collection_kind=kind.value
-        )
+        source_entities = self.db.list_source_entities(job_id, collection_kind=kind.value)
         if not source_entities:
             return
         _, target_counts = self._build_existing_index(target, kind)
@@ -517,12 +509,8 @@ class SyncEngine:
             self.db.append_event(job_id, "warning", str(exc))
             return
 
-        for task_id, fingerprint, target_id in zip(
-            pending_task_ids, pending_fingerprints, pending_ids, strict=False
-        ):
-            self.db.update_task(
-                task_id, state=TaskState.COMPLETED.value, last_error=None
-            )
+        for task_id, fingerprint, target_id in zip(pending_task_ids, pending_fingerprints, pending_ids, strict=False):
+            self.db.update_task(task_id, state=TaskState.COMPLETED.value, last_error=None)
             self.db.increment_job_counter(job_id, "progress_applied_count")
             self.db.upsert_mapping(
                 source_service=source.service.value,
@@ -541,15 +529,11 @@ class SyncEngine:
         target: StreamingServiceAdapter,
         is_cancelled: Callable[[], bool],
     ) -> None:
-        source_playlists = self.db.list_source_entities(
-            job_id, collection_kind=CollectionKind.PLAYLIST.value
-        )
+        source_playlists = self.db.list_source_entities(job_id, collection_kind=CollectionKind.PLAYLIST.value)
         if not source_playlists:
             return
 
-        target_playlists, _ = self._build_existing_index(
-            target, CollectionKind.PLAYLIST
-        )
+        target_playlists, _ = self._build_existing_index(target, CollectionKind.PLAYLIST)
         for source_playlist in source_playlists:
             if is_cancelled():
                 return
@@ -590,9 +574,7 @@ class SyncEngine:
             pending_task_ids: list[int] = []
             pending_fingerprints: list[str] = []
 
-            source_items = self.db.list_source_entities(
-                job_id, parent_source_id=int(source_playlist["id"])
-            )
+            source_items = self.db.list_source_entities(job_id, parent_source_id=int(source_playlist["id"]))
             for item in source_items:
                 if is_cancelled():
                     return
@@ -607,10 +589,7 @@ class SyncEngine:
                 }:
                     continue
 
-                if (
-                    target_items_counter[work.fingerprint]
-                    >= source_seen[work.fingerprint]
-                ):
+                if target_items_counter[work.fingerprint] >= source_seen[work.fingerprint]:
                     self.db.create_or_update_task(
                         job_id=job_id,
                         dedupe_key=task_key,
@@ -669,9 +648,7 @@ class SyncEngine:
                     pending_item_ids,
                     strict=False,
                 ):
-                    self.db.update_task(
-                        task_id, state=TaskState.COMPLETED.value, last_error=None
-                    )
+                    self.db.update_task(task_id, state=TaskState.COMPLETED.value, last_error=None)
                     self.db.increment_job_counter(job_id, "progress_applied_count")
                     self.db.upsert_mapping(
                         source_service=source.service.value,
@@ -683,9 +660,7 @@ class SyncEngine:
                         match_method="playlist_item",
                     )
 
-    def _playlist_target_counter(
-        self, target: StreamingServiceAdapter, playlist_id: str
-    ) -> Counter[str]:
+    def _playlist_target_counter(self, target: StreamingServiceAdapter, playlist_id: str) -> Counter[str]:
         counter: Counter[str] = Counter()
         cursor: str | None = None
         while True:
@@ -696,9 +671,7 @@ class SyncEngine:
                     item_id = remote_item_id(raw)
                 except ValueError:
                     continue
-                fingerprint = canonicalize(
-                    target.service, item_kind, item_id, raw
-                ).fingerprint
+                fingerprint = canonicalize(target.service, item_kind, item_id, raw).fingerprint
                 counter[fingerprint] += 1
             if page.next_cursor is None:
                 return counter
@@ -811,7 +784,10 @@ class SyncEngine:
 
 
 class JobRunner:
+    """Run synchronization jobs on a background thread."""
+
     def __init__(self, engine: SyncEngine, db: Database) -> None:
+        """Initialize the job runner and its shared state."""
         self.engine = engine
         self.db = db
         self._lock = threading.Lock()
@@ -820,13 +796,12 @@ class JobRunner:
         self._cancelled: set[int] = set()
 
     def start(self, job_id: int) -> None:
+        """Start a job unless another job is already running."""
         with self._lock:
             if self._thread and self._thread.is_alive():
                 if self._active_job_id == job_id:
                     return
-                raise RuntimeError(
-                    f"Job {self._active_job_id} is already running. Only one job can run at a time."
-                )
+                raise RuntimeError(f"Job {self._active_job_id} is already running. Only one job can run at a time.")
             self._active_job_id = job_id
             self._cancelled.discard(job_id)
             self._thread = threading.Thread(
@@ -847,6 +822,7 @@ class JobRunner:
                     self._thread = None
 
     def cancel(self, job_id: int) -> None:
+        """Cancel an active job or mark an idle job as canceled."""
         with self._lock:
             if self._active_job_id == job_id:
                 self._cancelled.add(job_id)
@@ -861,6 +837,7 @@ class JobRunner:
         self.db.append_event(job_id, "warning", "Synchronization canceled.")
 
     def auto_resume(self) -> None:
+        """Resume incomplete jobs that are eligible to run again."""
         for job in self.db.list_incomplete_jobs():
             if job["status"] == JobStatus.PAUSED_RATE_LIMIT.value:
                 resume_token = job.get("resume_token")
@@ -877,6 +854,7 @@ class JobRunner:
                 return
 
     def wait(self, timeout: float = 5.0) -> None:
+        """Block until the active job thread exits or the timeout expires."""
         deadline = time.time() + timeout
         thread = self._thread
         while thread and thread.is_alive() and time.time() < deadline:
