@@ -16,4 +16,4 @@ This repository now uses option B because it satisfies workflow security linters
 Option A was changing the lint workflow from `mypy` to `ty`.
 Option B was keeping `mypy` as the workflow type checker and restoring the missing dev dependency.
 
-This repository now uses option B because the existing README, workflow, and `[tool.mypy]` configuration already standardize on `mypy`, so the smallest coherent fix is to keep that toolchain aligned.
+This repository now uses option A because the project already depends on Astral tooling, `ty` handles the type-checking role directly, and keeping `mypy` in parallel would add duplicate maintenance without a clear benefit.

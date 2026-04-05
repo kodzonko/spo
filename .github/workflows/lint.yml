@@ -2,9 +2,18 @@ name: Lint and Format Check
 
 on:
   push:
-    branches: ["*"]
+    branches:
+      - "**"
   pull_request:
-    branches: ["*"]
+    branches:
+      - "**"
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+      - converted_to_draft
+  workflow_dispatch:
 
 jobs:
   lint:
@@ -49,7 +58,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv sync
+          uv sync --locked
 
       - name: Check code formatting with ruff
         run: |
@@ -59,6 +68,6 @@ jobs:
         run: |
           uv run ruff check src tests
 
-      - name: Run type checking with mypy
+      - name: Run type checking with ty
         run: |
-          uv run mypy
+          uv run ty check

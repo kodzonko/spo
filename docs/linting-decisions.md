@@ -1,0 +1,22 @@
+# Linting Decisions
+
+## Ruff Rule Scope
+
+Option A was enforcing every rule from `select = ["ALL"]` immediately across source files, tests, and embedded templates.
+Option B was keeping `ALL` as the baseline while explicitly ignoring rule families that currently create large amounts of mechanical churn without improving runtime behavior, and keeping the correctness-focused rules enabled.
+
+This repository now uses option B because it lets Ruff catch concrete integration, safety, and framework issues without forcing hundreds of docstring, annotation, complexity, and exception-style edits while the codebase is still evolving.
+
+## Test And Template Exceptions
+
+Option A was applying the same Ruff expectations to pytest assertions, test fixture secrets, and long embedded HTML template lines.
+Option B was using targeted per-file ignores for those cases while keeping the stricter rules elsewhere.
+
+This repository now uses option B because bare `assert` statements are idiomatic in pytest, fixture-only credential strings are test data rather than deployed secrets, and wrapping long inline template fragments would make the template module harder to maintain.
+
+## Dynamic SQL Updates
+
+Option A was banning all dynamic SQL query assembly in the persistence layer.
+Option B was allowing dynamic `UPDATE` fragments only after validating each column name against an explicit allow-list, and documenting the remaining Ruff false positive inline.
+
+This repository now uses option B because `update_job` and `update_task` need partial updates, but the allow-lists keep the query surface bounded to known columns.
