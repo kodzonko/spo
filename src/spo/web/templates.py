@@ -10,6 +10,9 @@ TEMPLATES: dict[str, str] = {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ title }} · spo</title>
+    <link rel="icon" href="data:,">
+    <link rel="apple-touch-icon" href="data:,">
+    <link rel="apple-touch-icon-precomposed" href="data:,">
     <style>
       :root {
         color-scheme: light;
@@ -297,9 +300,6 @@ TEMPLATES: dict[str, str] = {
       <label>Client ID
         <input name="client_id" placeholder="Spotify app client ID" required>
       </label>
-      <label>Client Secret
-        <input name="client_secret" type="password" placeholder="Spotify app client secret" required>
-      </label>
       <label>Redirect URI
         <input name="redirect_uri" placeholder="Optional. Defaults to local callback URI.">
       </label>
@@ -307,7 +307,7 @@ TEMPLATES: dict[str, str] = {
         <button type="submit">Connect Spotify</button>
       </div>
     </form>
-    <p class="small muted">Users must provide their own Spotify developer app credentials.</p>
+    <p class="small muted">Uses Spotify Authorization Code with PKCE. Provide your own Spotify developer app client ID and allow the local redirect URI in the dashboard.</p>
   </article>
   <article class="panel">
     <h2>YouTube Music</h2>

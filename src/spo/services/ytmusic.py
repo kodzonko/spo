@@ -150,7 +150,7 @@ class YouTubeMusicAdapter(StreamingServiceAdapter):
                 if retry_after_value is not None:
                     try:
                         retry_after = float(retry_after_value)
-                    except (TypeError, ValueError):
+                    except TypeError, ValueError:
                         retry_after = None
                 raise RateLimitError("YouTube Music rate limit exceeded.", retry_after) from exc
             if exc.response is not None and exc.response.status_code in {

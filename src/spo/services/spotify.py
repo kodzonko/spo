@@ -8,7 +8,8 @@ from urllib.parse import urlparse
 
 import requests
 import spotipy
-from spotipy.oauth2 import SpotifyOAuth
+from spotipy.cache_handler import MemoryCacheHandler
+from spotipy.oauth2 import SpotifyPKCE
 
 from spo.exceptions import AuthenticationError, RateLimitError
 from spo.models import (
@@ -42,6 +43,8 @@ SPOTIFY_SCOPES = (
 )
 HTTP_TOO_MANY_REQUESTS = int(requests.codes["too_many_requests"])
 HTTP_UNAUTHORIZED = int(requests.codes["unauthorized"])
+SPOTIFY_PKCE_CODE_CHALLENGE_KEY = "pkce_code_challenge"
+SPOTIFY_PKCE_CODE_VERIFIER_KEY = "pkce_code_verifier"
 
 
 class SpotifyAdapter(StreamingServiceAdapter):
@@ -93,19 +96,47 @@ class SpotifyAdapter(StreamingServiceAdapter):
         return f"http://{settings.bind_host}:{settings.bind_port}/callback/spotify"
 
     @classmethod
-    def build_authorize_url(cls, settings: Settings, credential_payload: dict[str, Any], state: str) -> str:
-        """Build the Spotify OAuth authorization URL for a pending login."""
-        redirect_uri = credential_payload.get("redirect_uri") or cls.default_redirect_uri(settings)
-        oauth = SpotifyOAuth(
+    def _redirect_uri(cls, settings: Settings, credential_payload: dict[str, Any]) -> str:
+        return str(credential_payload.get("redirect_uri") or cls.default_redirect_uri(settings))
+
+    @classmethod
+    def _pkce_oauth(cls, *, credential_payload: dict[str, Any], redirect_uri: str) -> SpotifyPKCE:
+        token_info = credential_payload.get("token_info")
+        cache_handler = MemoryCacheHandler(token_info=token_info if isinstance(token_info, dict) else None)
+        oauth = SpotifyPKCE(
             client_id=credential_payload["client_id"],
-            client_secret=credential_payload["client_secret"],
             redirect_uri=redirect_uri,
             scope=SPOTIFY_SCOPES,
-            show_dialog=True,
             open_browser=False,
-            cache_handler=None,
+            cache_handler=cache_handler,
         )
-        return oauth.get_authorize_url(state=state)
+        code_verifier = str(credential_payload.get(SPOTIFY_PKCE_CODE_VERIFIER_KEY) or "").strip()
+        code_challenge = str(credential_payload.get(SPOTIFY_PKCE_CODE_CHALLENGE_KEY) or "").strip()
+        if code_verifier and code_challenge:
+            oauth.code_verifier = code_verifier
+            oauth.code_challenge = code_challenge
+        return oauth
+
+    @classmethod
+    def prepare_authorization(
+        cls,
+        settings: Settings,
+        credential_payload: dict[str, Any],
+        state: str,
+    ) -> tuple[str, dict[str, Any]]:
+        """Build a Spotify PKCE authorization URL and pending credential payload."""
+        redirect_uri = cls._redirect_uri(settings, credential_payload)
+        payload = {
+            "client_id": str(credential_payload["client_id"]).strip(),
+            "redirect_uri": redirect_uri,
+        }
+        oauth = cls._pkce_oauth(credential_payload=payload, redirect_uri=redirect_uri)
+        authorize_url = oauth.get_authorize_url(state=state)
+        if not oauth.code_verifier or not oauth.code_challenge:
+            raise AuthenticationError("Spotify PKCE handshake could not be prepared.")
+        payload[SPOTIFY_PKCE_CODE_VERIFIER_KEY] = oauth.code_verifier
+        payload[SPOTIFY_PKCE_CODE_CHALLENGE_KEY] = oauth.code_challenge
+        return authorize_url, payload
 
     @classmethod
     def exchange_code(
@@ -116,32 +147,25 @@ class SpotifyAdapter(StreamingServiceAdapter):
         code: str,
     ) -> dict[str, Any]:
         """Exchange an OAuth code for a persisted Spotify credential payload."""
-        redirect_uri = credential_payload.get("redirect_uri") or cls.default_redirect_uri(settings)
-        oauth = SpotifyOAuth(
-            client_id=credential_payload["client_id"],
-            client_secret=credential_payload["client_secret"],
-            redirect_uri=redirect_uri,
-            scope=SPOTIFY_SCOPES,
-            open_browser=False,
-            cache_handler=None,
-        )
-        token_info = oauth.get_access_token(code, as_dict=True, check_cache=False)
-        if not token_info:
+        redirect_uri = cls._redirect_uri(settings, credential_payload)
+        if not credential_payload.get(SPOTIFY_PKCE_CODE_VERIFIER_KEY) or not credential_payload.get(
+            SPOTIFY_PKCE_CODE_CHALLENGE_KEY,
+        ):
+            raise AuthenticationError("Spotify PKCE verifier is missing.")
+        oauth = cls._pkce_oauth(credential_payload=credential_payload, redirect_uri=redirect_uri)
+        oauth.get_access_token(code, check_cache=False)
+        token_info = oauth.cache_handler.get_cached_token()
+        if not isinstance(token_info, dict):
             raise AuthenticationError("Spotify did not return an access token.")
-        payload = dict(credential_payload)
-        payload["token_info"] = token_info
-        return payload
+        return {
+            "client_id": str(credential_payload["client_id"]).strip(),
+            "redirect_uri": redirect_uri,
+            "token_info": token_info,
+        }
 
-    def _oauth(self) -> SpotifyOAuth:
-        redirect_uri = self.credential_payload.get("redirect_uri") or self.default_redirect_uri(self.settings)
-        return SpotifyOAuth(
-            client_id=self.credential_payload["client_id"],
-            client_secret=self.credential_payload["client_secret"],
-            redirect_uri=redirect_uri,
-            scope=SPOTIFY_SCOPES,
-            open_browser=False,
-            cache_handler=None,
-        )
+    def _oauth(self) -> SpotifyPKCE:
+        redirect_uri = self._redirect_uri(self.settings, self.credential_payload)
+        return self._pkce_oauth(credential_payload=self.credential_payload, redirect_uri=redirect_uri)
 
     def _ensure_client(self) -> spotipy.Spotify:
         if self._client is not None:

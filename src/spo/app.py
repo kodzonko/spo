@@ -51,16 +51,23 @@ HTTP_BAD_REQUEST = int(requests.codes["bad_request"])
 HTTP_NOT_FOUND = int(requests.codes["not_found"])
 HTTP_GONE = int(requests.codes["gone"])
 HTTP_BAD_GATEWAY = int(requests.codes["bad_gateway"])
+HTTP_NO_CONTENT = int(requests.codes["no_content"])
 HTTP_SEE_OTHER = int(requests.codes["see_other"])
 HTTP_OK = int(requests.codes["ok"])
 
 JOB_NOT_FOUND_MESSAGE = "Job not found."
 SPOTIFY_ACCOUNT_LABEL = "Spotify account"
+SPOTIFY_CLIENT_ID_REQUIRED_MESSAGE = "Provide a Spotify client ID."
 YTMUSIC_ACCOUNT_LABEL = "YouTube Music account"
 YTMUSIC_HEADERS_REQUIRED_MESSAGE = "Paste browser headers JSON, or use Connect YouTube Music above."
 YTMUSIC_OAUTH_CREDENTIALS_REQUIRED_MESSAGE = "Provide a Google OAuth client ID and secret for YouTube Music."
 YTMUSIC_OAUTH_EXPIRED_MESSAGE = "YouTube Music authorization expired. Start the connection again."
 YTMUSIC_CREDENTIALS_SAVED_MESSAGE = "YouTube Music credentials saved."
+BROWSER_ICON_PROBE_PATHS = (
+    "/favicon.ico",
+    "/apple-touch-icon.png",
+    "/apple-touch-icon-precomposed.png",
+)
 
 
 @dataclass(slots=True)
@@ -251,6 +258,13 @@ def _build_ytmusic_headers_payload(headers_json: str | None) -> tuple[Credential
     )
 
 
+def _resolve_spotify_client_id(client_id: str) -> str:
+    resolved_client_id = client_id.strip()
+    if not resolved_client_id:
+        _raise_validation_error(SPOTIFY_CLIENT_ID_REQUIRED_MESSAGE)
+    return resolved_client_id
+
+
 def _resolve_ytmusic_oauth_client_credentials(client_id: str, client_secret: str) -> tuple[str, str]:
     resolved_client_id = client_id.strip()
     resolved_client_secret = client_secret.strip()
@@ -263,9 +277,9 @@ def _start_spotify_oauth(
     app_state: AppState,
     *,
     client_id: str,
-    client_secret: str,
     redirect_uri: str,
 ) -> str:
+    resolved_client_id = _resolve_spotify_client_id(client_id)
     oauth_state = secrets.token_urlsafe(24)
     existing = _latest_account_for_service(app_state.db, Service.SPOTIFY)
     account_id = app_state.db.upsert_account(
@@ -276,21 +290,20 @@ def _start_spotify_oauth(
             oauth_state=oauth_state,
         ),
     )
-    payload = {
-        "client_id": client_id.strip(),
-        "client_secret": client_secret.strip(),
-        "redirect_uri": redirect_uri,
-    }
+    auth_url, payload = SpotifyAdapter.prepare_authorization(
+        app_state.settings,
+        {
+            "client_id": resolved_client_id,
+            "redirect_uri": redirect_uri,
+        },
+        oauth_state,
+    )
     app_state.db.save_credentials(
         account_id,
         CredentialType.SPOTIFY_OAUTH.value,
         payload,
     )
-    return SpotifyAdapter.build_authorize_url(
-        app_state.settings,
-        payload,
-        oauth_state,
-    )
+    return auth_url
 
 
 def _resolve_spotify_callback_context(
@@ -646,6 +659,22 @@ def _register_page_routes(app: FastAPI, app_state: AppState) -> None:
         )
 
 
+def _browser_icon_probe() -> Response:
+    """Return an empty response for browser icon probes we intentionally do not serve."""
+    return Response(status_code=HTTP_NO_CONTENT)
+
+
+def _register_browser_asset_routes(app: FastAPI) -> None:
+    for path in BROWSER_ICON_PROBE_PATHS:
+        app.add_api_route(
+            path,
+            _browser_icon_probe,
+            methods=["GET", "HEAD"],
+            include_in_schema=False,
+            name=f"empty-icon-{path.strip('/').replace('/', '-').replace('.', '-')}",
+        )
+
+
 def _register_connection_routes(app: FastAPI, app_state: AppState) -> None:
     _register_spotify_connection_routes(app, app_state)
     _register_ytmusic_connection_routes(app, app_state)
@@ -656,17 +685,18 @@ def _register_spotify_connection_routes(app: FastAPI, app_state: AppState) -> No
     @app.post("/api/connections/spotify")
     async def save_spotify_connection(
         client_id: Annotated[str, Form()],
-        client_secret: Annotated[str, Form()],
         redirect_uri: Annotated[str | None, Form()] = None,
     ) -> RedirectResponse:
-        redirect_uri = sanitize_redirect_uri(redirect_uri, app_state.settings)
-        auth_url = _start_spotify_oauth(
-            app_state,
-            client_id=client_id,
-            client_secret=client_secret,
-            redirect_uri=redirect_uri,
-        )
-        return _redirect(auth_url)
+        try:
+            resolved_redirect_uri = sanitize_redirect_uri(redirect_uri, app_state.settings)
+            auth_url = _start_spotify_oauth(
+                app_state,
+                client_id=client_id,
+                redirect_uri=resolved_redirect_uri,
+            )
+            return _redirect(auth_url)
+        except (AuthenticationError, ValidationError) as exc:
+            return _connections_redirect(str(exc), error=True)
 
     @app.get("/callback/spotify")
     async def spotify_callback(
@@ -920,6 +950,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
 
     app = FastAPI(title="spo", lifespan=lifespan)
     app.state.spo = app_state
+    _register_browser_asset_routes(app)
     _register_page_routes(app, app_state)
     _register_connection_routes(app, app_state)
     _register_job_routes(app, app_state)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 import spotipy
@@ -24,7 +24,6 @@ def _make_adapter(
 ) -> SpotifyAdapter:
     payload = {
         "client_id": "client-id",
-        "client_secret": "client-secret",
         "token_info": {
             "access_token": "access-token",
             "expires_at": int(time.time()) + 3600,
@@ -40,51 +39,85 @@ def _make_adapter(
     )
 
 
-def test_build_authorize_url_and_exchange_code_use_expected_oauth_settings(
+def test_prepare_authorization_and_exchange_code_use_expected_pkce_settings(
     settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Test Spotify OAuth helper methods build requests using the default callback."""
+    """Test Spotify PKCE helpers build requests using the default callback."""
     constructor_calls: list[dict[str, Any]] = []
 
-    class FakeOAuth:
+    class FakeCacheHandler:
+        def __init__(self, token_info: dict[str, Any] | None = None) -> None:
+            self.token_info = token_info
+
+        def get_cached_token(self) -> dict[str, Any] | None:
+            return self.token_info
+
+        def save_token_to_cache(self, token_info: dict[str, Any]) -> None:
+            self.token_info = token_info
+
+    class FakePKCE:
         def __init__(self, **kwargs: object) -> None:
             constructor_calls.append(kwargs)
+            self.cache_handler = cast("FakeCacheHandler", kwargs["cache_handler"])
+            self.code_verifier: str | None = None
+            self.code_challenge: str | None = None
 
         def get_authorize_url(self, *, state: str) -> str:
+            self.code_verifier = "verifier-123"
+            self.code_challenge = "challenge-123"
             return f"https://accounts.spotify.test/authorize?state={state}"
 
-        def get_access_token(self, code: str, *, as_dict: bool, check_cache: bool) -> dict[str, Any]:
+        def get_access_token(self, code: str, *, check_cache: bool) -> str:
             assert code == "oauth-code"
-            assert as_dict is True
             assert check_cache is False
-            return {
-                "access_token": "fresh-token",
-                "refresh_token": "fresh-refresh-token",
-                "expires_at": 1234,
-            }
+            self.cache_handler.save_token_to_cache(
+                {
+                    "access_token": "fresh-token",
+                    "refresh_token": "fresh-refresh-token",
+                    "expires_at": 1234,
+                },
+            )
+            return "fresh-token"
 
-    monkeypatch.setattr(spotify_service, "SpotifyOAuth", FakeOAuth)
+    monkeypatch.setattr(spotify_service, "MemoryCacheHandler", FakeCacheHandler)
+    monkeypatch.setattr(spotify_service, "SpotifyPKCE", FakePKCE)
 
-    credential_payload = {
-        "client_id": "client-id",
-        "client_secret": "client-secret",
-    }
-
-    authorize_url = SpotifyAdapter.build_authorize_url(settings, credential_payload, "state-123")
+    authorize_url, pending_payload = SpotifyAdapter.prepare_authorization(
+        settings,
+        {"client_id": "client-id"},
+        "state-123",
+    )
     exchanged_payload = SpotifyAdapter.exchange_code(
         settings=settings,
-        credential_payload=credential_payload,
+        credential_payload=pending_payload,
         code="oauth-code",
     )
 
     expected_redirect_uri = "http://127.0.0.1:8899/callback/spotify"
 
     assert authorize_url == "https://accounts.spotify.test/authorize?state=state-123"
+    assert pending_payload["pkce_code_verifier"] == "verifier-123"
+    assert pending_payload["pkce_code_challenge"] == "challenge-123"
     assert constructor_calls[0]["redirect_uri"] == expected_redirect_uri
-    assert constructor_calls[0]["show_dialog"] is True
     assert constructor_calls[1]["redirect_uri"] == expected_redirect_uri
+    assert exchanged_payload["client_id"] == "client-id"
+    assert exchanged_payload["redirect_uri"] == expected_redirect_uri
     assert exchanged_payload["token_info"]["access_token"] == "fresh-token"
+    assert "pkce_code_verifier" not in exchanged_payload
+    assert "pkce_code_challenge" not in exchanged_payload
+
+
+def test_exchange_code_requires_pkce_verifier(
+    settings: Settings,
+) -> None:
+    """Test the callback exchange rejects non-PKCE payloads."""
+    with pytest.raises(AuthenticationError, match=re.escape("Spotify PKCE verifier is missing.")):
+        SpotifyAdapter.exchange_code(
+            settings=settings,
+            credential_payload={"client_id": "client-id"},
+            code="oauth-code",
+        )
 
 
 def test_ensure_client_refreshes_expired_tokens_and_authenticate_caches_identity(
@@ -162,14 +195,12 @@ def test_ensure_client_refreshes_expired_tokens_and_authenticate_caches_identity
         (
             {
                 "client_id": "client-id",
-                "client_secret": "client-secret",
             },
             "Spotify account is not authorized yet.",
         ),
         (
             {
                 "client_id": "client-id",
-                "client_secret": "client-secret",
                 "token_info": {
                     "access_token": "stale-access-token",
                     "expires_at": 0,

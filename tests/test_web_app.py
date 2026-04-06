@@ -16,6 +16,7 @@ from spo.services.spotify import SpotifyAdapter
 from tests.fakes import FakeSpotifyAdapter, FakeYouTubeMusicAdapter
 
 HTTP_OK = int(requests.codes["ok"])
+HTTP_NO_CONTENT = int(requests.codes["no_content"])
 HTTP_SEE_OTHER = int(requests.codes["see_other"])
 HTTP_NOT_FOUND = int(requests.codes["not_found"])
 
@@ -106,6 +107,23 @@ def test_web_app_renders_pages_and_creates_job(app_state: AppState) -> None:
         JobStatus.COMPLETED.value,
         JobStatus.COMPLETED_WITH_WARNINGS.value,
     }
+
+
+def test_web_app_declares_empty_icons_and_handles_common_icon_probes(app_state: AppState) -> None:
+    """Test that the web app avoids favicon 404s without shipping icon assets."""
+    client = TestClient(create_app(app_state))
+
+    response = client.get("/")
+
+    assert response.status_code == HTTP_OK
+    assert '<link rel="icon" href="data:,">' in response.text
+    assert '<link rel="apple-touch-icon" href="data:,">' in response.text
+    assert '<link rel="apple-touch-icon-precomposed" href="data:,">' in response.text
+
+    for path in ("/favicon.ico", "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png"):
+        icon_response = client.get(path)
+        assert icon_response.status_code == HTTP_NO_CONTENT
+        assert icon_response.content == b""
 
 
 def test_web_app_can_save_and_validate_ytmusic_connection(app_state: AppState) -> None:
@@ -330,8 +348,20 @@ def test_web_app_handles_spotify_connect_callback_and_event_stream(
     app = create_app(app_state)
     client = TestClient(app)
 
-    def fake_build_authorize_url(_settings: object, _payload: dict[str, object], state: str) -> str:
-        return f"https://spotify.example/authorize?state={state}"
+    def fake_prepare_authorization(
+        _settings: object,
+        _payload: dict[str, object],
+        state: str,
+    ) -> tuple[str, dict[str, object]]:
+        return (
+            f"https://spotify.example/authorize?state={state}",
+            {
+                "client_id": "client-id",
+                "redirect_uri": "http://127.0.0.1:8899/callback/spotify",
+                "pkce_code_verifier": "verifier-123",
+                "pkce_code_challenge": "challenge-123",
+            },
+        )
 
     def fake_exchange_code(
         *,
@@ -342,7 +372,8 @@ def test_web_app_handles_spotify_connect_callback_and_event_stream(
         assert code == "oauth-code"
         assert settings is app_state.settings
         return {
-            **credential_payload,
+            "client_id": credential_payload["client_id"],
+            "redirect_uri": credential_payload["redirect_uri"],
             "token_info": {
                 "access_token": "token",
                 "refresh_token": "refresh",
@@ -356,7 +387,7 @@ def test_web_app_handles_spotify_connect_callback_and_event_stream(
             display_name="Connected Spotify",
         )
 
-    monkeypatch.setattr(SpotifyAdapter, "build_authorize_url", staticmethod(fake_build_authorize_url))
+    monkeypatch.setattr(SpotifyAdapter, "prepare_authorization", staticmethod(fake_prepare_authorization))
     monkeypatch.setattr(SpotifyAdapter, "exchange_code", staticmethod(fake_exchange_code))
     monkeypatch.setattr(SpotifyAdapter, "authenticate", fake_authenticate)
 
@@ -364,7 +395,6 @@ def test_web_app_handles_spotify_connect_callback_and_event_stream(
         "/api/connections/spotify",
         data={
             "client_id": "client-id",
-            "client_secret": "client-secret",
             "redirect_uri": "http://127.0.0.1:8899/callback/spotify",
         },
         follow_redirects=False,
@@ -376,6 +406,10 @@ def test_web_app_handles_spotify_connect_callback_and_event_stream(
     assert len(accounts) == 1
     oauth_state = accounts[0]["oauth_state"]
     assert oauth_state is not None
+    pending_credentials = app_state.db.get_credentials(int(accounts[0]["id"]))
+    assert pending_credentials is not None
+    assert pending_credentials["payload"]["client_id"] == "client-id"
+    assert "pkce_code_verifier" in pending_credentials["payload"]
 
     callback_redirect = client.get(
         f"/callback/spotify?code=oauth-code&state={oauth_state}",
@@ -387,6 +421,9 @@ def test_web_app_handles_spotify_connect_callback_and_event_stream(
     updated = app_state.db.find_account_by_service(Service.SPOTIFY.value)[0]
     assert updated["auth_status"] == "connected"
     assert updated["display_name"] == "Connected Spotify"
+    persisted_credentials = app_state.db.get_credentials(int(updated["id"]))
+    assert persisted_credentials is not None
+    assert "pkce_code_verifier" not in persisted_credentials["payload"]
 
     target_account_id = app_state.db.upsert_account(
         AccountUpsert(
@@ -413,6 +450,20 @@ def test_web_app_preserves_spotify_callback_validation_errors(app_state: AppStat
     assert _redirect_query_value(response.headers["location"], "error") == (
         "Spotify callback is missing code or state."
     )
+
+
+def test_web_app_requires_spotify_client_id(app_state: AppState) -> None:
+    """Test Spotify connection setup rejects blank client identifiers."""
+    client = TestClient(create_app(app_state))
+
+    response = client.post(
+        "/api/connections/spotify",
+        data={"client_id": " ", "redirect_uri": "http://127.0.0.1:8899/callback/spotify"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == HTTP_SEE_OTHER
+    assert _redirect_query_value(response.headers["location"], "error") == "Provide a Spotify client ID."
 
 
 def test_app_startup_can_auto_resume_jobs(

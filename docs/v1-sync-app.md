@@ -14,7 +14,7 @@
 - Live progress: Server-Sent Events for job updates. Do not use WebSockets.
 - Runner: in-process background worker thread. Allow only one active job per target account and one active job per app process.
 - Storage: use a fixed repo-local app-data directory at `./.spo-data/`, with `state.db`, `app.log`, and optionally `settings.toml` for non-secret bootstrap settings only.
-- Credentials and tokens: store Spotify client secret, Spotify OAuth tokens, and YouTube auth material in SQLite because they are mutable app-managed state. Do not use OS keyring and do not store credentials in `config.ini`.
+- Credentials and tokens: store the Spotify client ID, pending PKCE verifier, Spotify OAuth tokens, and YouTube auth material in SQLite because they are mutable app-managed state. Do not use OS keyring and do not store credentials in `config.ini`.
 - Security model: v1 accepts plaintext-at-rest secrets inside the repo-local app-data directory. Apply best-effort restrictive file permissions when creating the app-data directory and database, but do not implement platform-specific keychain or ACL logic.
 - Modules: `web`, `sync`, `services`, `persistence`, `matching`.
 - Service abstraction: `StreamingServiceAdapter` with concrete `SpotifyAdapter`, `YouTubeMusicAdapter`, and future `AppleMusicAdapter`.
@@ -30,7 +30,7 @@
 
 ## Auth and Service Rules
 
-- Spotify uses per-user developer app credentials only. The UI collects `client_id`, `client_secret`, and optional redirect URI, then runs local OAuth.
+- Spotify uses per-user developer app credentials only. The UI collects `client_id` and an optional redirect URI, then runs local Authorization Code with PKCE.
 - Default Spotify redirect: `http://127.0.0.1:8899/callback/spotify`.
 - YouTube Music auth uses browser-header import as the primary flow. Optional import of a pre-generated OAuth JSON is allowed, but v1 does not build Google OAuth client registration into the UI.
 - If a settings file exists, it may contain only non-secret bootstrap options such as bind host, bind port, log level, and `auto_resume`. Service credentials must stay in SQLite.
@@ -71,7 +71,7 @@
 - `tasks`: job_id, action, collection_kind, source_entity_id, target_entity_id, payload_json, state, attempt_count, cooldown_until, last_error.
 - `events`: job_id, level, message, detail_json, created_at.
 - `service_cooldowns`: account_id, operation, cooldown_until, reason, vendor_hint.
-- `service_credentials.payload_json` stores service-specific auth material such as Spotify client credentials and tokens or imported YouTube headers or OAuth blobs. Keep this separated from `accounts` so reconnect, rotation, and schema migration do not rewrite account identity rows.
+- `service_credentials.payload_json` stores service-specific auth material such as the Spotify client ID, pending PKCE verifier, OAuth tokens, or imported YouTube headers and OAuth blobs. Keep this separated from `accounts` so reconnect, rotation, and schema migration do not rewrite account identity rows.
 - Resume logic must read unfinished `tasks` and pending snapshot cursors instead of recomputing finished work.
 
 ## UI Behavior
