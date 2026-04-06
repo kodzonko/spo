@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 import requests
+from ytmusicapi.exceptions import YTMusicServerError
 from ytmusicapi.models.content.enums import LikeStatus
 
 import spo.services.ytmusic as ytmusic_service
@@ -27,9 +29,10 @@ def _make_adapter(
     settings: Settings,
     credential_payload: dict[str, Any] | None = None,
 ) -> YouTubeMusicAdapter:
-    payload = {
-        "credential_type": "ytmusic_headers",
-        "data": {"headers": {}},
+    payload: dict[str, Any] = {
+        "credential_type": "ytmusic_oauth",
+        "data": {"access_token": "test-token"},
+        "oauth_client": {"client_id": "test-id", "client_secret": "test-secret"},
     }
     if credential_payload is not None:
         payload.update(credential_payload)
@@ -65,14 +68,7 @@ def test_list_collection_handles_wrapped_payload_items(
                 ],
             }
 
-    adapter = YouTubeMusicAdapter(
-        account_id=1,
-        credential_payload={
-            "credential_type": "ytmusic_headers",
-            "data": {"headers": {}},
-        },
-        settings=settings,
-    )
+    adapter = _make_adapter(settings)
 
     def fake_ensure_client() -> FakeClient:
         return FakeClient()
@@ -93,14 +89,7 @@ def test_call_ignores_invalid_retry_after_header(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Test that invalid Retry-After values still raise a rate-limit error without retry metadata."""
-    adapter = YouTubeMusicAdapter(
-        account_id=1,
-        credential_payload={
-            "credential_type": "ytmusic_headers",
-            "data": {"headers": {}},
-        },
-        settings=settings,
-    )
+    adapter = _make_adapter(settings)
     response = requests.Response()
     response.status_code = 429
     response.headers["Retry-After"] = "not-a-number"
@@ -139,7 +128,10 @@ def test_persisted_payload_reads_refreshed_oauth_data_from_auth_file(settings: S
 
     auth_file_path = adapter._auth_file_path  # noqa: SLF001 - testing persisted OAuth file handling
     auth_file = auth_file_path()
-    auth_file.write_text(json.dumps({"access_token": "fresh-token"}), encoding="utf-8")
+    auth_file.write_text(
+        json.dumps({"access_token": "fresh-token", "refresh_token_expires_in": 604800}),
+        encoding="utf-8",
+    )
 
     assert adapter.persisted_payload["data"] == {"access_token": "fresh-token"}
 
@@ -189,12 +181,187 @@ def test_ensure_client_builds_oauth_client_and_caches_the_instance(
     assert json.loads(auth_file.read_text(encoding="utf-8")) == {"access_token": "access-token"}
 
 
+def test_ensure_client_strips_sdk_incompatible_google_token_fields(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test OAuth auth files drop Google-only fields before ``ytmusicapi`` loads them."""
+    constructor_calls: list[dict[str, Any]] = []
+
+    class FakeYTMusic:
+        def __init__(self, auth: str, *, oauth_credentials: object) -> None:
+            constructor_calls.append(
+                {
+                    "auth": auth,
+                    "oauth_credentials": oauth_credentials,
+                    "auth_payload": json.loads(Path(auth).read_text(encoding="utf-8")),
+                },
+            )
+
+    monkeypatch.setattr(ytmusic_service, "YTMusic", FakeYTMusic)
+
+    adapter = _make_adapter(
+        settings,
+        credential_payload={
+            "data": {
+                "access_token": "access-token",
+                "expires_at": "1712400000",
+                "expires_in": "3600",
+                "refresh_token": "refresh-token",
+                "refresh_token_expires_in": 604800,
+                "scope": "https://www.googleapis.com/auth/youtube",
+                "token_type": "Bearer",
+            },
+        },
+    )
+
+    ensure_client = adapter._ensure_client  # noqa: SLF001 - testing OAuth file persistence directly
+
+    ensure_client()
+
+    assert constructor_calls[0]["auth_payload"] == {
+        "access_token": "access-token",
+        "expires_at": 1712400000,
+        "expires_in": 3600,
+        "refresh_token": "refresh-token",
+        "scope": "https://www.googleapis.com/auth/youtube",
+        "token_type": "Bearer",
+    }
+
+
+def test_ensure_client_prefers_existing_auth_file_over_stale_db_token_data(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test the on-disk auth file remains the source of truth for refreshed OAuth tokens."""
+    constructor_calls: list[dict[str, Any]] = []
+
+    class FakeYTMusic:
+        def __init__(self, auth: str, *, oauth_credentials: object) -> None:
+            constructor_calls.append(
+                {
+                    "auth": auth,
+                    "oauth_credentials": oauth_credentials,
+                    "auth_payload": json.loads(Path(auth).read_text(encoding="utf-8")),
+                },
+            )
+
+    monkeypatch.setattr(ytmusic_service, "YTMusic", FakeYTMusic)
+
+    adapter = _make_adapter(
+        settings,
+        credential_payload={
+            "data": {
+                "access_token": "stale-token",
+                "expires_at": 10,
+                "expires_in": 1,
+                "refresh_token": "stale-refresh",
+                "scope": "https://www.googleapis.com/auth/youtube",
+                "token_type": "Bearer",
+            },
+        },
+    )
+
+    auth_file_path = adapter._auth_file_path  # noqa: SLF001 - testing persisted OAuth file handling
+    auth_file = auth_file_path()
+    auth_file.write_text(
+        json.dumps(
+            {
+                "access_token": "fresh-token",
+                "expires_at": 1712400000,
+                "expires_in": 3600,
+                "refresh_token": "fresh-refresh",
+                "refresh_token_expires_in": 604800,
+                "scope": "https://www.googleapis.com/auth/youtube",
+                "token_type": "Bearer",
+            },
+        ),
+        encoding="utf-8",
+    )
+
+    ensure_client = adapter._ensure_client  # noqa: SLF001 - testing OAuth file persistence directly
+
+    ensure_client()
+
+    assert constructor_calls[0]["auth_payload"]["access_token"] == "fresh-token"
+    assert constructor_calls[0]["auth_payload"]["refresh_token"] == "fresh-refresh"
+    assert "refresh_token_expires_in" not in constructor_calls[0]["auth_payload"]
+
+
+def test_authenticate_retries_oauth_with_experimental_client_profiles(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test OAuth auth can fall back to experimental client profiles and persist the winner."""
+    constructor_calls: list[tuple[str, str | None]] = []
+    probe_calls: list[tuple[str, str | None]] = []
+    invalid_argument_error = YTMusicServerError(
+        "Server returned HTTP 400: Bad Request.\nRequest contains an invalid argument."
+    )
+
+    class FakeYTMusic:
+        def __init__(self, auth: str, *, oauth_credentials: object) -> None:
+            del auth, oauth_credentials
+            self.context = {"context": {"client": {}}}
+
+        def get_library_playlists(self, *, limit: int | None) -> list[dict[str, str]]:
+            assert limit == 1
+            client = self.context["context"]["client"]
+            client_name = client.get("clientName", "WEB_REMIX")
+            client_version = client.get("clientVersion")
+            constructor_calls.append((client_name, client_version))
+            raise invalid_argument_error
+
+        def _send_request(self, endpoint: str, body: dict[str, str]) -> dict[str, object]:
+            assert endpoint == "browse"
+            assert body == {"browseId": ytmusic_service.YTMUSIC_AUTH_PROBE_BROWSE_ID}
+            client = self.context["context"]["client"]
+            client_name = client.get("clientName", "WEB_REMIX")
+            client_version = client.get("clientVersion")
+            probe_calls.append((client_name, client_version))
+            if client_name == "TVHTML5" and client_version == "7.20241013.17.00":
+                return {"responseContext": {}}
+            raise invalid_argument_error
+
+    monkeypatch.setattr(ytmusic_service, "YTMusic", FakeYTMusic)
+
+    adapter = _make_adapter(
+        settings,
+        credential_payload={
+            "credential_type": "ytmusic_oauth",
+            "data": {
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "expires_in": 3600,
+                "token_type": "Bearer",
+            },
+            "oauth_client": {
+                "client_id": "client-id",
+                "client_secret": "client-secret",
+            },
+        },
+    )
+
+    identity = adapter.authenticate()
+
+    assert identity == AccountIdentity(
+        remote_account_id="ytmusic-account-1",
+        display_name="YouTube Music User",
+    )
+    assert constructor_calls == [("WEB_REMIX", None)]
+    assert probe_calls == [
+        ("IOS_MUSIC", "6.42"),
+        ("TVHTML5", "7.20241013.17.00"),
+    ]
+    assert adapter.persisted_payload["oauth_profile"] == "tvhtml5_v7"
+
+
 @pytest.mark.parametrize(
     ("credential_payload", "message"),
     [
         (
             {
-                "credential_type": "ytmusic_headers",
+                "credential_type": "ytmusic_oauth",
             },
             "YouTube Music credentials are missing.",
         ),
@@ -284,7 +451,12 @@ def test_authenticate_and_collection_reads_cache_identity_and_slice_payloads(
     fake_client = FakeClient()
     adapter = _make_adapter(settings)
 
-    monkeypatch.setattr(adapter, "_ensure_client", lambda: fake_client)
+    monkeypatch.setattr(adapter, "_build_client", lambda _profile: fake_client)
+    monkeypatch.setattr(
+        adapter,
+        "_oauth_profile_candidates",
+        lambda: (ytmusic_service.YTMUSIC_WEB_REMIX_OAUTH_PROFILE,),
+    )
 
     first_identity = adapter.authenticate()
     second_identity = adapter.authenticate()
@@ -416,3 +588,18 @@ def test_call_translates_unauthorized_responses_into_authentication_errors(setti
 
     with pytest.raises(AuthenticationError, match=re.escape("YouTube Music credentials are invalid.")):
         call(raise_unauthorized)
+
+
+def test_call_translates_server_side_oauth_invalid_argument_into_authentication_error(
+    settings: Settings,
+) -> None:
+    """Test YT Music server-side OAuth 400 errors become controlled auth failures."""
+    adapter = _make_adapter(settings)
+    call = adapter._call  # noqa: SLF001 - exercising SDK-to-domain error translation directly
+    error = YTMusicServerError("Server returned HTTP 400: Bad Request.\nRequest contains an invalid argument.")
+
+    def raise_invalid_argument() -> None:
+        raise error
+
+    with pytest.raises(AuthenticationError, match="known upstream ytmusicapi OAuth issue"):
+        call(raise_invalid_argument)

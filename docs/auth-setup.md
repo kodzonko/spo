@@ -4,7 +4,6 @@ This guide matches the current auth flows implemented in `spo`:
 
 - Spotify: Authorization Code with PKCE
 - YouTube Music: Google device flow with your own OAuth client
-- YouTube Music fallback: manual browser-header import
 
 ## Spotify
 
@@ -31,59 +30,42 @@ Notes:
 
 ## YouTube Music
 
-### Recommended: Google device flow
-
-Use this when you want the cleanest supported setup for authenticated library access.
+### Enable the YouTube Data API
 
 1. Open the [Google Cloud Console](https://console.cloud.google.com/).
 2. Create a new project, or select an existing personal project.
 3. Open `APIs & Services` -> `Library`.
-4. Enable `YouTube Data API v3`.
-5. Open `Google Auth Platform` and configure the OAuth consent screen.
-6. Set the app name, support email, audience, and contact email.
-7. If you choose `External` and leave the app in testing, add your own Google account as a test user. For a personal one-user setup, that is enough.
-8. Open `APIs & Services` -> `Credentials`.
-9. Create an `OAuth client ID`.
-10. Choose `TVs and Limited Input devices` as the application type.
-11. Create the client and copy both the `Client ID` and `Client Secret`.
-12. Return to `spo` -> `Connections`.
-13. Paste those values into the YouTube Music form.
-14. Click `Connect YouTube Music`.
-15. `spo` will open a page showing a Google verification URL and a user code.
-16. Open that URL, sign in with the Google account that owns the target YouTube Music library, enter the code, and approve access.
-17. Keep the `spo` page open until it reports completion.
+4. Search for `YouTube Data API v3` and enable it.
+
+### Configure the OAuth consent screen
+
+1. Open `Google Auth Platform` -> `Branding` (or `APIs & Services` -> `OAuth consent screen` in the classic view) and configure the consent screen.
+2. Set the app name, support email, audience, and contact email.
+3. If you choose `External` and leave the app in testing, add your own Google account as a test user under `Google Auth Platform` -> `Audience`. For a personal one-user setup, that is enough.
+
+### Create OAuth credentials
+
+1. Open `Google Auth Platform` -> `Clients` (or `APIs & Services` -> `Credentials` in the classic view).
+2. Click `Create Client` (or `Create Credentials` -> `OAuth client ID`).
+3. Set the application type to **`TVs and Limited Input devices`**. This is required because `spo` uses the [Google device authorization flow](https://developers.google.com/youtube/v3/guides/auth/devices). Do not choose `Web application`, `Desktop app`, or any other type — only `TVs and Limited Input devices` supports the device code grant.
+4. Name the client (e.g. `spo`) and create it.
+5. Copy both the `Client ID` and `Client Secret`.
+
+### Connect in spo
+
+1. Start `spo` with `uv run spo` and open `Connections`.
+2. Paste the `Client ID` and `Client Secret` into the YouTube Music form.
+3. Click `Connect YouTube Music`.
+4. `spo` will open a page showing a Google verification URL and a user code.
+5. Open that URL, sign in with the Google account that owns the target YouTube Music library, enter the code, and approve access.
+6. Keep the `spo` page open until it reports completion.
 
 Notes:
 
-- This flow does not need a redirect URI.
+- This flow does not need a redirect URI. The fields for redirect URIs and JavaScript origins that appear for other client types do not apply here.
 - `spo` stores the resulting token locally so later sync runs can reuse it.
-
-### Fallback: browser headers
-
-Use this only if you already know how to export `ytmusicapi` browser headers, or if you want to avoid Google Cloud setup.
-
-1. Sign in to [music.youtube.com](https://music.youtube.com/) with the Google account you want `spo` to use.
-2. Open the browser developer tools and switch to the `Network` tab.
-3. Trigger an authenticated request on the site. The easiest option is to open Library or scroll until a `POST` request to `/browse` appears.
-4. Copy the request headers as described in the [`ytmusicapi` browser-auth guide](https://ytmusicapi.readthedocs.io/en/stable/setup/browser.html).
-5. Convert the copied headers into a JSON object if your browser exported them in another format.
-6. Return to `spo` -> `Connections`.
-7. Expand `Advanced: paste browser headers instead`.
-8. Paste the JSON into `Headers JSON`.
-9. Click `Save browser headers`.
-
-The JSON should match the shape expected by `ytmusicapi`, for example:
-
-```json
-{
-  "Accept": "*/*",
-  "Authorization": "PASTE_AUTHORIZATION",
-  "Content-Type": "application/json",
-  "X-Goog-AuthUser": "0",
-  "x-origin": "https://music.youtube.com",
-  "Cookie": "PASTE_COOKIE"
-}
-```
+- `spo` also tries a small experimental fallback sequence of alternate YouTube client profiles for OAuth accounts. This is based on current upstream `ytmusicapi` discussion around `IOS_MUSIC` and `TVHTML5` workarounds. The fallback can help the initial connection succeed, but some library endpoints may still depend on upstream parser support for those profiles.
+- If Google consent succeeds but `spo` reports that YouTube Music rejected the authenticated library request with `Request contains an invalid argument`, the setup is most likely correct and you are hitting a current upstream `ytmusicapi` OAuth limitation rather than a bad client ID or secret.
 
 ## References
 
@@ -92,6 +74,5 @@ The JSON should match the shape expected by `ytmusicapi`, for example:
 - Spotify PKCE flow: <https://developer.spotify.com/documentation/web-api/tutorials/code-pkce-flow>
 - YouTube Music auth overview: <https://ytmusicapi.readthedocs.io/en/stable/setup/>
 - YouTube Music OAuth setup: <https://ytmusicapi.readthedocs.io/en/stable/setup/oauth.html>
-- YouTube Music browser auth: <https://ytmusicapi.readthedocs.io/en/stable/setup/browser.html>
 - Google device flow: <https://developers.google.com/youtube/v3/guides/auth/devices>
 - Google OAuth consent screen: <https://developers.google.com/workspace/guides/configure-oauth-consent>

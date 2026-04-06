@@ -290,7 +290,7 @@ TEMPLATES: dict[str, str] = {
 <section class="hero">
   <div>
     <h1>Connections</h1>
-    <p class="muted">Store local credentials for each streaming service on this machine. Spotify uses an OAuth redirect, and YouTube Music can use a guided Google device flow or a manual browser-header import.</p>
+    <p class="muted">Store local credentials for each streaming service on this machine. Spotify uses an OAuth redirect, and YouTube Music uses a guided Google device flow.</p>
   </div>
 </section>
 <section class="grid cols-2">
@@ -322,19 +322,8 @@ TEMPLATES: dict[str, str] = {
         <button type="submit">Connect YouTube Music</button>
       </div>
     </form>
-    <p class="small muted">Recommended. `spo` starts the Google device flow, opens the sign-in page, and saves the resulting token locally. You still need your own YouTube Data API OAuth client.</p>
-    <details>
-      <summary>Advanced: paste browser headers instead</summary>
-      <form method="post" action="/api/connections/ytmusic" style="margin-top: 0.8rem;">
-        <label>Headers JSON
-          <textarea name="headers_json" placeholder='{"cookie": "...", "x-goog-authuser": "0"}'></textarea>
-        </label>
-        <div class="button-row">
-          <button class="secondary" type="submit">Save browser headers</button>
-        </div>
-      </form>
-      <p class="small muted">Use this only if you already know how to export `ytmusicapi` browser headers from an authenticated `music.youtube.com` session.</p>
-    </details>
+    <p class="small muted">spo starts the Google device flow, opens the sign-in page, and saves the resulting token locally. You still need your own YouTube Data API OAuth client.</p>
+    <p class="small muted">If the default YouTube Music OAuth client behavior is rejected, spo will now try a couple of experimental YouTube client profiles automatically before giving up.</p>
   </article>
 </section>
 <section class="panel" style="margin-top: 1rem;">

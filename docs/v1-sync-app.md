@@ -32,7 +32,7 @@
 
 - Spotify uses per-user developer app credentials only. The UI collects `client_id` and an optional redirect URI, then runs local Authorization Code with PKCE.
 - Default Spotify redirect: `http://127.0.0.1:8899/callback/spotify`.
-- YouTube Music auth uses browser-header import as the primary flow. Optional import of a pre-generated OAuth JSON is allowed, but v1 does not build Google OAuth client registration into the UI.
+- YouTube Music auth uses the Google device-flow OAuth. The user provides a Google OAuth client ID and secret, and the app handles the device flow and token storage.
 - If a settings file exists, it may contain only non-secret bootstrap options such as bind host, bind port, log level, and `auto_resume`. Service credentials must stay in SQLite.
 - Apple Music shows as “planned” and disabled in the UI. Keep DB and interface compatibility, but no active Apple jobs in v1.
 

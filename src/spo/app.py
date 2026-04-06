@@ -59,7 +59,6 @@ JOB_NOT_FOUND_MESSAGE = "Job not found."
 SPOTIFY_ACCOUNT_LABEL = "Spotify account"
 SPOTIFY_CLIENT_ID_REQUIRED_MESSAGE = "Provide a Spotify client ID."
 YTMUSIC_ACCOUNT_LABEL = "YouTube Music account"
-YTMUSIC_HEADERS_REQUIRED_MESSAGE = "Paste browser headers JSON, or use Connect YouTube Music above."
 YTMUSIC_OAUTH_CREDENTIALS_REQUIRED_MESSAGE = "Provide a Google OAuth client ID and secret for YouTube Music."
 YTMUSIC_OAUTH_EXPIRED_MESSAGE = "YouTube Music authorization expired. Start the connection again."
 YTMUSIC_CREDENTIALS_SAVED_MESSAGE = "YouTube Music credentials saved."
@@ -243,18 +242,6 @@ def _save_validated_credentials(
         credential_type.value,
         payload,
         last_validated_at=utcnow(),
-    )
-
-
-def _build_ytmusic_headers_payload(headers_json: str | None) -> tuple[CredentialType, dict[str, Any]]:
-    if not headers_json or not headers_json.strip():
-        _raise_validation_error(YTMUSIC_HEADERS_REQUIRED_MESSAGE)
-    return (
-        CredentialType.YTMUSIC_HEADERS,
-        {
-            "credential_type": CredentialType.YTMUSIC_HEADERS.value,
-            "data": json.loads(headers_json),
-        },
     )
 
 
@@ -735,25 +722,7 @@ def _register_spotify_connection_routes(app: FastAPI, app_state: AppState) -> No
 
 
 def _register_ytmusic_connection_routes(app: FastAPI, app_state: AppState) -> None:
-    _register_ytmusic_manual_connection_route(app, app_state)
     _register_ytmusic_oauth_routes(app, app_state)
-
-
-def _register_ytmusic_manual_connection_route(app: FastAPI, app_state: AppState) -> None:
-    @app.post("/api/connections/ytmusic")
-    async def save_ytmusic_connection(
-        headers_json: Annotated[str | None, Form()] = None,
-    ) -> RedirectResponse:
-        try:
-            credential_type, payload = _build_ytmusic_headers_payload(headers_json)
-            _save_ytmusic_connection(
-                app_state,
-                credential_type=credential_type,
-                payload=payload,
-            )
-            return _connections_redirect(YTMUSIC_CREDENTIALS_SAVED_MESSAGE, error=False)
-        except (json.JSONDecodeError, ValidationError, AuthenticationError) as exc:
-            return _connections_redirect(str(exc), error=True)
 
 
 def _register_ytmusic_oauth_routes(app: FastAPI, app_state: AppState) -> None:

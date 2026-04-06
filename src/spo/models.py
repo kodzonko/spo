@@ -56,7 +56,6 @@ class CredentialType(StrEnum):
     """Credential payload types stored for service accounts."""
 
     SPOTIFY_OAUTH = "spotify_oauth"
-    YTMUSIC_HEADERS = "ytmusic_headers"
     YTMUSIC_OAUTH = "ytmusic_oauth"
 
 

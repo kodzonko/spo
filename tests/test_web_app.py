@@ -1,6 +1,8 @@
 """Tests for the FastAPI web application flows."""
 
-from typing import ClassVar
+import json
+from pathlib import Path
+from typing import ClassVar, Protocol
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -8,17 +10,25 @@ import requests
 from anyio.lowlevel import checkpoint
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from ytmusicapi.exceptions import YTMusicServerError
 
 from spo.app import AppState, create_app
 from spo.models import AccountIdentity, CredentialType, JobStatus, Service
 from spo.persistence import AccountUpsert
 from spo.services.spotify import SpotifyAdapter
+from spo.services.ytmusic import YouTubeMusicAdapter
 from tests.fakes import FakeSpotifyAdapter, FakeYouTubeMusicAdapter
 
 HTTP_OK = int(requests.codes["ok"])
 HTTP_NO_CONTENT = int(requests.codes["no_content"])
 HTTP_SEE_OTHER = int(requests.codes["see_other"])
 HTTP_NOT_FOUND = int(requests.codes["not_found"])
+HTTP_BAD_REQUEST = int(requests.codes["bad_request"])
+
+
+class _OAuthClientLike(Protocol):
+    client_id: str
+    client_secret: str
 
 
 def _redirect_query_value(location: str, key: str) -> str | None:
@@ -72,7 +82,7 @@ def test_web_app_renders_pages_and_creates_job(app_state: AppState) -> None:
     )
     app_state.db.save_credentials(
         target_account_id,
-        CredentialType.YTMUSIC_HEADERS.value,
+        CredentialType.YTMUSIC_OAUTH.value,
         {"state_key": "target"},
     )
 
@@ -124,67 +134,6 @@ def test_web_app_declares_empty_icons_and_handles_common_icon_probes(app_state: 
         icon_response = client.get(path)
         assert icon_response.status_code == HTTP_NO_CONTENT
         assert icon_response.content == b""
-
-
-def test_web_app_can_save_and_validate_ytmusic_connection(app_state: AppState) -> None:
-    """Test that YouTube Music headers can be saved and validated."""
-    FakeYouTubeMusicAdapter.shared_state["connect"] = {
-        "identity": {
-            "remote_account_id": "yt-connected",
-            "display_name": "Connected YT Music",
-        },
-        "collections": {},
-        "playlist_items": {},
-        "search": {},
-        "catalog": {},
-    }
-
-    client = TestClient(create_app(app_state))
-
-    response = client.post(
-        "/api/connections/ytmusic",
-        data={"headers_json": '{"state_key":"connect"}'},
-        follow_redirects=False,
-    )
-
-    assert response.status_code == HTTP_SEE_OTHER
-    assert "/connections?message=" in response.headers["location"]
-
-    accounts = app_state.db.find_account_by_service(Service.YTMUSIC.value)
-    assert len(accounts) == 1
-    assert accounts[0]["auth_status"] == "connected"
-
-    credentials = app_state.db.get_credentials(int(accounts[0]["id"]))
-    assert credentials is not None
-    assert credentials["payload"]["data"]["state_key"] == "connect"
-
-    test_response = client.post("/api/connections/ytmusic/test")
-    assert test_response.status_code == HTTP_OK
-    assert test_response.json()["display_name"] == "Connected YT Music"
-
-    invalid = client.post(
-        "/api/connections/ytmusic",
-        data={"headers_json": "{not-json}"},
-        follow_redirects=False,
-    )
-    assert invalid.status_code == HTTP_SEE_OTHER
-    assert "/connections?error=" in invalid.headers["location"]
-
-
-def test_web_app_requires_ytmusic_headers_json_for_manual_connection(app_state: AppState) -> None:
-    """Test that the manual YouTube Music flow rejects blank headers JSON."""
-    client = TestClient(create_app(app_state))
-
-    response = client.post(
-        "/api/connections/ytmusic",
-        data={"headers_json": "   "},
-        follow_redirects=False,
-    )
-
-    assert response.status_code == HTTP_SEE_OTHER
-    assert _redirect_query_value(response.headers["location"], "error") == (
-        "Paste browser headers JSON, or use Connect YouTube Music above."
-    )
 
 
 def test_web_app_can_start_and_complete_ytmusic_oauth_connection(
@@ -265,6 +214,229 @@ def test_web_app_can_start_and_complete_ytmusic_oauth_connection(
     assert credentials["credential_type"] == CredentialType.YTMUSIC_OAUTH.value
     assert credentials["payload"]["data"]["refresh_token"] == "oauth-refresh-token"
     assert credentials["payload"]["oauth_client"]["client_id"] == "google-client-id"
+
+
+def test_web_app_ytmusic_oauth_ignores_google_only_refresh_token_fields(
+    app_state: AppState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test the real YT Music adapter tolerates extra Google token fields during OAuth completion."""
+
+    class FakeOAuthCredentials:
+        def __init__(self, client_id: str, client_secret: str) -> None:
+            assert client_id == "google-client-id"
+            assert client_secret == "google-client-secret"
+
+        def get_code(self) -> dict[str, str | int]:
+            return {
+                "device_code": "device-code",
+                "user_code": "ABCD-EFGH",
+                "verification_url": "https://google.example/device",
+                "interval": 1,
+                "expires_in": 600,
+            }
+
+        def token_from_code(self, device_code: str) -> dict[str, str | int]:
+            assert device_code == "device-code"
+            return {
+                "access_token": "oauth-access-token",
+                "expires_in": 3600,
+                "refresh_token": "oauth-refresh-token",
+                "refresh_token_expires_in": 604800,
+                "scope": "https://www.googleapis.com/auth/youtube",
+                "token_type": "Bearer",
+            }
+
+    auth_file_payloads: list[dict[str, object]] = []
+
+    class FakeYTMusic:
+        def __init__(self, auth: str, *, oauth_credentials: _OAuthClientLike) -> None:
+            auth_file_payloads.append(json.loads(Path(auth).read_text(encoding="utf-8")))
+            assert oauth_credentials.client_id == "google-client-id"
+            assert oauth_credentials.client_secret == "google-client-secret"
+
+        def get_library_playlists(self, *, limit: int | None) -> list[dict[str, str]]:
+            assert limit == 1
+            return []
+
+    monkeypatch.setattr("spo.app.OAuthCredentials", FakeOAuthCredentials)
+    monkeypatch.setattr("spo.services.ytmusic.YTMusic", FakeYTMusic)
+    app_state.registry.register(Service.YTMUSIC, YouTubeMusicAdapter)
+
+    client = TestClient(create_app(app_state))
+
+    start = client.post(
+        "/api/connections/ytmusic/oauth/start",
+        data={
+            "client_id": "google-client-id",
+            "client_secret": "google-client-secret",
+        },
+        follow_redirects=False,
+    )
+    assert start.status_code == HTTP_SEE_OTHER
+
+    flow_id = start.headers["location"].rsplit("/", maxsplit=1)[-1]
+    status = client.get(f"/api/connections/ytmusic/oauth/{flow_id}/status")
+
+    assert status.status_code == HTTP_OK
+    assert status.json()["status"] == "connected"
+    assert "refresh_token_expires_in" not in auth_file_payloads[0]
+
+    accounts = app_state.db.find_account_by_service(Service.YTMUSIC.value)
+    credentials = app_state.db.get_credentials(int(accounts[0]["id"]))
+
+    assert credentials is not None
+    assert "refresh_token_expires_in" not in credentials["payload"]["data"]
+    assert credentials["payload"]["data"]["refresh_token"] == "oauth-refresh-token"
+
+
+def test_web_app_ytmusic_oauth_can_fall_back_to_experimental_client_profile(
+    app_state: AppState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test OAuth completion can persist an experimental client profile fallback."""
+
+    class FakeOAuthCredentials:
+        def __init__(self, client_id: str, client_secret: str) -> None:
+            assert client_id == "google-client-id"
+            assert client_secret == "google-client-secret"
+
+        def get_code(self) -> dict[str, str | int]:
+            return {
+                "device_code": "device-code",
+                "user_code": "ABCD-EFGH",
+                "verification_url": "https://google.example/device",
+                "interval": 1,
+                "expires_in": 600,
+            }
+
+        def token_from_code(self, device_code: str) -> dict[str, str | int]:
+            assert device_code == "device-code"
+            return {
+                "access_token": "oauth-access-token",
+                "expires_in": 3600,
+                "refresh_token": "oauth-refresh-token",
+                "scope": "https://www.googleapis.com/auth/youtube",
+                "token_type": "Bearer",
+            }
+
+    invalid_argument_error = YTMusicServerError(
+        "Server returned HTTP 400: Bad Request.\nRequest contains an invalid argument."
+    )
+
+    class FakeYTMusic:
+        def __init__(self, auth: str, *, oauth_credentials: _OAuthClientLike) -> None:
+            del auth
+            assert oauth_credentials.client_id == "google-client-id"
+            assert oauth_credentials.client_secret == "google-client-secret"
+            self.context = {"context": {"client": {}}}
+
+        def get_library_playlists(self, *, limit: int | None) -> list[dict[str, str]]:
+            assert limit == 1
+            raise invalid_argument_error
+
+        def _send_request(self, endpoint: str, body: dict[str, str]) -> dict[str, object]:
+            assert endpoint == "browse"
+            assert body == {"browseId": "FEmusic_liked_playlists"}
+            client = self.context["context"]["client"]
+            if client.get("clientName") == "TVHTML5" and client.get("clientVersion") == "7.20241013.17.00":
+                return {"responseContext": {}}
+            raise invalid_argument_error
+
+    monkeypatch.setattr("spo.app.OAuthCredentials", FakeOAuthCredentials)
+    monkeypatch.setattr("spo.services.ytmusic.YTMusic", FakeYTMusic)
+    app_state.registry.register(Service.YTMUSIC, YouTubeMusicAdapter)
+
+    client = TestClient(create_app(app_state))
+    start = client.post(
+        "/api/connections/ytmusic/oauth/start",
+        data={
+            "client_id": "google-client-id",
+            "client_secret": "google-client-secret",
+        },
+        follow_redirects=False,
+    )
+
+    flow_id = start.headers["location"].rsplit("/", maxsplit=1)[-1]
+    status = client.get(f"/api/connections/ytmusic/oauth/{flow_id}/status")
+
+    assert status.status_code == HTTP_OK
+    assert status.json()["status"] == "connected"
+
+    accounts = app_state.db.find_account_by_service(Service.YTMUSIC.value)
+    credentials = app_state.db.get_credentials(int(accounts[0]["id"]))
+
+    assert credentials is not None
+    assert credentials["payload"]["oauth_profile"] == "tvhtml5_v7"
+
+
+def test_web_app_ytmusic_oauth_returns_controlled_error_for_upstream_invalid_argument(
+    app_state: AppState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test OAuth completion reports upstream YT Music 400s as a handled auth error."""
+
+    class FakeOAuthCredentials:
+        def __init__(self, client_id: str, client_secret: str) -> None:
+            assert client_id == "google-client-id"
+            assert client_secret == "google-client-secret"
+
+        def get_code(self) -> dict[str, str | int]:
+            return {
+                "device_code": "device-code",
+                "user_code": "ABCD-EFGH",
+                "verification_url": "https://google.example/device",
+                "interval": 1,
+                "expires_in": 600,
+            }
+
+        def token_from_code(self, device_code: str) -> dict[str, str | int]:
+            assert device_code == "device-code"
+            return {
+                "access_token": "oauth-access-token",
+                "expires_in": 3600,
+                "refresh_token": "oauth-refresh-token",
+                "scope": "https://www.googleapis.com/auth/youtube",
+                "token_type": "Bearer",
+            }
+
+    class FakeYTMusic:
+        def __init__(self, auth: str, *, oauth_credentials: _OAuthClientLike) -> None:
+            del auth
+            assert oauth_credentials.client_id == "google-client-id"
+            assert oauth_credentials.client_secret == "google-client-secret"
+            self.context = {"context": {"client": {}}}
+
+        def get_library_playlists(self, *, limit: int | None) -> list[dict[str, str]]:
+            assert limit == 1
+            raise YTMusicServerError("Server returned HTTP 400: Bad Request.\nRequest contains an invalid argument.")
+
+        def _send_request(self, endpoint: str, body: dict[str, str]) -> dict[str, object]:
+            assert endpoint == "browse"
+            assert body == {"browseId": "FEmusic_liked_playlists"}
+            raise YTMusicServerError("Server returned HTTP 400: Bad Request.\nRequest contains an invalid argument.")
+
+    monkeypatch.setattr("spo.app.OAuthCredentials", FakeOAuthCredentials)
+    monkeypatch.setattr("spo.services.ytmusic.YTMusic", FakeYTMusic)
+    app_state.registry.register(Service.YTMUSIC, YouTubeMusicAdapter)
+
+    client = TestClient(create_app(app_state))
+    start = client.post(
+        "/api/connections/ytmusic/oauth/start",
+        data={
+            "client_id": "google-client-id",
+            "client_secret": "google-client-secret",
+        },
+        follow_redirects=False,
+    )
+
+    flow_id = start.headers["location"].rsplit("/", maxsplit=1)[-1]
+    status = client.get(f"/api/connections/ytmusic/oauth/{flow_id}/status")
+
+    assert status.status_code == HTTP_BAD_REQUEST
+    assert status.json()["status"] == "error"
+    assert "known upstream ytmusicapi OAuth issue" in status.json()["message"]
+    assert "/connections?error=" in status.json()["redirect_url"]
 
 
 def test_web_app_requires_ytmusic_oauth_client_credentials(app_state: AppState) -> None:

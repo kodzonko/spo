@@ -118,7 +118,7 @@ def test_sync_engine_skips_existing_items_and_resumes_without_duplicates(app_sta
     )
     app_state.db.save_credentials(
         target_account_id,
-        CredentialType.YTMUSIC_HEADERS.value,
+        CredentialType.YTMUSIC_OAUTH.value,
         {"state_key": "target"},
     )
     job_id = app_state.db.create_job(
@@ -271,7 +271,7 @@ def test_playlist_sync_merges_into_existing_playlist_and_preserves_target_only_i
     )
     app_state.db.save_credentials(
         target_account_id,
-        CredentialType.YTMUSIC_HEADERS.value,
+        CredentialType.YTMUSIC_OAUTH.value,
         {"state_key": "target"},
     )
     job_id = app_state.db.create_job(
@@ -405,7 +405,7 @@ def test_playlist_sync_stores_mappings_by_item_kind(app_state: AppState) -> None
     )
     app_state.db.save_credentials(
         target_account_id,
-        CredentialType.YTMUSIC_HEADERS.value,
+        CredentialType.YTMUSIC_OAUTH.value,
         {"state_key": "target"},
     )
     job_id = app_state.db.create_job(
@@ -517,7 +517,7 @@ def test_rate_limited_job_pauses_then_auto_resumes(app_state: AppState) -> None:
     )
     app_state.db.save_credentials(
         target_account_id,
-        CredentialType.YTMUSIC_HEADERS.value,
+        CredentialType.YTMUSIC_OAUTH.value,
         {"state_key": "target"},
     )
     job_id = app_state.db.create_job(

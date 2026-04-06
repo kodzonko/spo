@@ -7,9 +7,7 @@
 - Python `3.14.3`
 - Astral's [`uv`](https://docs.astral.sh/uv/)
 - A Spotify developer app for your own account
-- For YouTube Music, either:
-  - your own Google OAuth client for the guided device flow
-  - exported `ytmusicapi`-compatible browser headers as a fallback
+- For YouTube Music: your own Google OAuth client for the guided device flow
 
 ## Install and Run
 
@@ -33,7 +31,7 @@ Step-by-step instructions for both services live in [docs/auth-setup.md](docs/au
 1. Go to `Connections`.
 2. Connect Spotify by pasting your app `client_id`.
 3. In your Spotify app settings, allow the redirect URI shown by `spo`. The default is `http://127.0.0.1:8899/callback/spotify`.
-4. Connect YouTube Music with either the guided Google device flow or exported browser headers.
+4. Connect YouTube Music with the guided Google device flow.
 5. Go to `New Sync`, choose source and target accounts, select the collection types, and create the job.
 6. Watch progress on the job page. Jobs can be resumed after restarts, auth fixes, and rate-limit pauses.
 
