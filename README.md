@@ -4,7 +4,7 @@
 
 ## Requirements
 
-- Python `3.13`
+- Python `3.14`
 - Astral's [`uv`](https://docs.astral.sh/uv/)
 - A Spotify developer app for your own account
 - YouTube Music auth material in `ytmusicapi`-compatible headers JSON or OAuth JSON form
@@ -25,7 +25,7 @@ Open [http://127.0.0.1:8899](http://127.0.0.1:8899).
 ## How to Use It
 
 1. Go to `Connections`.
-2. Connect Spotify by pasting your app `client_id` and `client_secret`.
+2. Connect Spotify by pasting your app `client_id`.
 3. In your Spotify app settings, allow the redirect URI shown by `spo`. The default is `http://127.0.0.1:8899/callback/spotify`.
 4. Connect YouTube Music by pasting either headers JSON or OAuth JSON.
 5. Go to `New Sync`, choose source and target accounts, select the collection types, and create the job.
@@ -50,4 +50,5 @@ Collections currently handled:
 - The app is non-destructive on the target side. It creates or appends, but does not delete, unlike, unfollow, or clean up target-only content.
 - Matching is automatic and best-effort. There is no manual review queue, so unresolved items are skipped and reported as warnings.
 - Spotify has no separate "liked songs" write surface here; syncing YouTube Music liked tracks into Spotify lands them in Spotify saved tracks.
+- Spotify connections use Authorization Code with PKCE, so `spo` stores the Spotify `client_id`, redirect URI, and tokens locally, but not a Spotify client secret.
 - Credentials and tokens are stored locally in `./.spo-data/`. Treat that directory as sensitive.
